@@ -10,6 +10,7 @@ public record CheckInDto(string? RoNo);
 public record CreateReminderDto(string CustomerName, string Phone, string? Vin, string? Plate, string? CareType, DateTime DueDate, string? Note);
 public record ContactDto(string? Note);
 public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? DealerCode);
+public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
 
 public interface IBookingService
 {
@@ -27,6 +28,8 @@ public interface IBookingService
     Task<object?> ContactReminderAsync(long id, string? note);
     Task<object?> ConvertReminderAsync(long id, ConvertDto dto);
     Task<object> CareStatsAsync();
+    Task<object> AddEngineerAsync(AddEngineerDto dto);
+    Task<object> EngineerWorkloadAsync(string date, string? dealer);
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -142,6 +145,34 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             cancelled = byStatus.FirstOrDefault(x => x.s == ApptStatus.Cancelled)?.c ?? 0,
             noShow = byStatus.FirstOrDefault(x => x.s == ApptStatus.NoShow)?.c ?? 0
         };
+    }
+
+    // ===== Kỹ thuật viên (Ser_Engineer) =====
+    public async Task<object> AddEngineerAsync(AddEngineerDto dto)
+    {
+        var code = dto.Code.Trim().ToUpperInvariant();
+        var e = await db.Engineers.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
+        if (e is null) { e = new Engineer { OrgId = Org, Code = code, Name = dto.Name.Trim(), Skill = dto.Skill, DealerCode = dto.DealerCode?.Trim() ?? "", Active = true }; db.Engineers.Add(e); }
+        else { e.Name = dto.Name.Trim(); e.Skill = dto.Skill; e.DealerCode = dto.DealerCode?.Trim() ?? e.DealerCode; }
+        await db.SaveChangesAsync();
+        return new { e.Code, e.Name, e.Skill, e.DealerCode, e.Active };
+    }
+
+    // Tải công việc KTV theo ngày: đếm lịch hẹn Confirmed/CheckedIn gán mỗi KTV.
+    public async Task<object> EngineerWorkloadAsync(string date, string? dealer)
+    {
+        DateTime.TryParse(date, out var d);
+        var engs = db.Engineers.Where(x => x.OrgId == Org && x.Active);
+        if (!string.IsNullOrWhiteSpace(dealer)) engs = engs.Where(x => x.DealerCode == dealer);
+        var list = await engs.OrderBy(x => x.Code).ToListAsync();
+        var appts = await db.Appointments.Where(a => a.OrgId == Org && a.PreferredAt.Date == d.Date
+            && (a.Status == ApptStatus.Confirmed || a.Status == ApptStatus.CheckedIn)).ToListAsync();
+        var items = list.Select(e => new
+        {
+            e.Code, e.Name, e.Skill, e.DealerCode,
+            jobs = appts.Count(a => a.Engineer == e.Name || a.Engineer == e.Code)
+        });
+        return new { date = d.ToString("yyyy-MM-dd"), engineers = list.Count, items };
     }
 
     // ===== Chăm sóc KH dịch vụ (Ser_CustomerCare) =====

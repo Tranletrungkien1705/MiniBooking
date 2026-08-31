@@ -11,6 +11,18 @@ public sealed class Org
 /// <summary>Vòng đời lịch hẹn dịch vụ (Ser_App): khách đặt → xác nhận → check-in (tạo RO) → hoàn tất.</summary>
 public enum ApptStatus { Requested = 0, Confirmed = 1, CheckedIn = 2, Done = 3, Cancelled = 4, NoShow = 5 }
 
+/// <summary>Kỹ thuật viên (Ser_Engineer): roster + kỹ năng để phân lịch + đo tải.</summary>
+public sealed class Engineer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? Skill { get; set; }         // Máy gầm/Điện/Đồng sơn...
+    public string DealerCode { get; set; } = "";
+    public bool Active { get; set; } = true;
+}
+
 /// <summary>Nhắc chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật/bảo hiểm → liên hệ → đặt lịch.</summary>
 public sealed class CareReminder
 {

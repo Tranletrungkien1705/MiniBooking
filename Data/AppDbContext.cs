@@ -8,6 +8,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Org> Orgs => Set<Org>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<CareReminder> CareReminders => Set<CareReminder>();
+    public DbSet<Engineer> Engineers => Set<Engineer>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

@@ -122,6 +122,14 @@ app.MapGet("/api/calendar", async (string date, IBookingService svc, string? dea
 
 app.MapGet("/api/stats", async (IBookingService svc) => Results.Ok(await svc.StatsAsync())).RequireAuthorization();
 
+// ---- Kỹ thuật viên (Ser_Engineer): roster + tải công việc ----
+app.MapPost("/api/engineers", async (AddEngineerDto dto, IBookingService svc) =>
+    string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name)
+        ? Results.BadRequest(new { error = "Cần Code và Name." }) : Results.Ok(await svc.AddEngineerAsync(dto))).RequireAuthorization();
+
+app.MapGet("/api/engineers/workload", async (string date, IBookingService svc, string? dealer) =>
+    Results.Ok(await svc.EngineerWorkloadAsync(date, dealer))).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {
