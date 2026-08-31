@@ -122,6 +122,32 @@ app.MapGet("/api/calendar", async (string date, IBookingService svc, string? dea
 
 app.MapGet("/api/stats", async (IBookingService svc) => Results.Ok(await svc.StatsAsync())).RequireAuthorization();
 
+// ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
+app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CustomerName) || string.IsNullOrWhiteSpace(dto.Phone))
+        return Results.BadRequest(new { error = "Cần CustomerName và Phone." });
+    return Results.Ok(await svc.CreateReminderAsync(dto));
+}).RequireAuthorization();
+
+app.MapGet("/api/care", async (IBookingService svc, string? status, string? careType, string? dueBefore) =>
+    Results.Ok(await svc.ListRemindersAsync(status, careType, dueBefore))).RequireAuthorization();
+
+app.MapPost("/api/care/{id:long}/contact", async (long id, ContactDto dto, IBookingService svc) =>
+{
+    var r = await svc.ContactReminderAsync(id, dto.Note);
+    return r is null ? Results.NotFound(new { id, error = "Không thấy nhắc hoặc đã đặt lịch/đóng." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapPost("/api/care/{id:long}/convert", async (long id, ConvertDto dto, IBookingService svc) =>
+{
+    if (dto.PreferredAt == default) return Results.BadRequest(new { error = "Cần PreferredAt." });
+    var r = await svc.ConvertReminderAsync(id, dto);
+    return r is null ? Results.NotFound(new { id, error = "Không thấy nhắc hoặc đã đặt lịch." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapGet("/api/care-stats", async (IBookingService svc) => Results.Ok(await svc.CareStatsAsync())).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

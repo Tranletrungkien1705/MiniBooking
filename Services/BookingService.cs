@@ -7,6 +7,9 @@ namespace MiniBooking.Services;
 public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note);
 public record ConfirmDto(string? Engineer);
 public record CheckInDto(string? RoNo);
+public record CreateReminderDto(string CustomerName, string Phone, string? Vin, string? Plate, string? CareType, DateTime DueDate, string? Note);
+public record ContactDto(string? Note);
+public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? DealerCode);
 
 public interface IBookingService
 {
@@ -19,6 +22,11 @@ public interface IBookingService
     Task<object?> CancelAsync(string code, bool noShow);
     Task<object> CalendarAsync(string date, string? dealer);
     Task<object> StatsAsync();
+    Task<object> CreateReminderAsync(CreateReminderDto dto);
+    Task<object> ListRemindersAsync(string? status, string? careType, string? dueBefore);
+    Task<object?> ContactReminderAsync(long id, string? note);
+    Task<object?> ConvertReminderAsync(long id, ConvertDto dto);
+    Task<object> CareStatsAsync();
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -133,6 +141,72 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             done = byStatus.FirstOrDefault(x => x.s == ApptStatus.Done)?.c ?? 0,
             cancelled = byStatus.FirstOrDefault(x => x.s == ApptStatus.Cancelled)?.c ?? 0,
             noShow = byStatus.FirstOrDefault(x => x.s == ApptStatus.NoShow)?.c ?? 0
+        };
+    }
+
+    // ===== Chăm sóc KH dịch vụ (Ser_CustomerCare) =====
+    public async Task<object> CreateReminderAsync(CreateReminderDto dto)
+    {
+        var r = new CareReminder
+        {
+            OrgId = Org, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone.Trim(),
+            Vin = dto.Vin?.Trim().ToUpperInvariant(), Plate = dto.Plate?.Trim(),
+            CareType = string.IsNullOrWhiteSpace(dto.CareType) ? "Maintenance" : dto.CareType!.Trim(),
+            DueDate = dto.DueDate, Note = dto.Note, Status = "Pending"
+        };
+        db.CareReminders.Add(r);
+        await db.SaveChangesAsync();
+        return new { r.Id, r.CustomerName, r.CareType, r.DueDate, r.Status };
+    }
+
+    public async Task<object> ListRemindersAsync(string? status, string? careType, string? dueBefore)
+    {
+        var q = db.CareReminders.Where(r => r.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+        if (!string.IsNullOrWhiteSpace(careType)) q = q.Where(r => r.CareType == careType);
+        if (!string.IsNullOrWhiteSpace(dueBefore) && DateTime.TryParse(dueBefore, out var d)) q = q.Where(r => r.DueDate.Date <= d.Date);
+        var items = await q.OrderBy(r => r.DueDate).Take(500).Select(r => new
+        {
+            r.Id, r.CustomerName, r.Phone, r.Vin, r.Plate, r.CareType, r.DueDate, r.Status, r.Note, r.BookingCode, r.ContactedAt
+        }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    public async Task<object?> ContactReminderAsync(long id, string? note)
+    {
+        var r = await db.CareReminders.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (r is null || r.Status is "Booked" or "Closed") return null;
+        r.Status = "Contacted"; r.ContactedAt = DateTime.Now;
+        if (!string.IsNullOrWhiteSpace(note)) r.Note = note;
+        await db.SaveChangesAsync();
+        return new { r.Id, r.Status, r.ContactedAt };
+    }
+
+    // Chuyển nhắc CSKH thành lịch hẹn thực (Ser_CustomerCare → Ser_App)
+    public async Task<object?> ConvertReminderAsync(long id, ConvertDto dto)
+    {
+        var r = await db.CareReminders.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (r is null || r.Status == "Booked") return null;
+        var book = (dynamic)await BookAsync(new BookDto(r.CustomerName, r.Phone, r.Vin, r.Plate,
+            dto.ServiceType ?? (r.CareType == "Maintenance" ? "Bảo dưỡng định kỳ" : r.CareType),
+            dto.PreferredAt, dto.DealerCode, $"Từ nhắc CSKH #{r.Id} ({r.CareType})"));
+        string code = book.Code;
+        r.Status = "Booked"; r.BookingCode = code;
+        await db.SaveChangesAsync();
+        return new { r.Id, r.Status, bookingCode = code, dto.PreferredAt };
+    }
+
+    public async Task<object> CareStatsAsync()
+    {
+        var q = db.CareReminders.Where(r => r.OrgId == Org);
+        var today = DateTime.Now.Date;
+        return new
+        {
+            total = await q.CountAsync(),
+            pending = await q.CountAsync(r => r.Status == "Pending"),
+            contacted = await q.CountAsync(r => r.Status == "Contacted"),
+            booked = await q.CountAsync(r => r.Status == "Booked"),
+            overdue = await q.CountAsync(r => r.Status == "Pending" && r.DueDate.Date < today)
         };
     }
 }
