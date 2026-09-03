@@ -164,6 +164,53 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
     return Results.Ok(new { orgId = org.Id, apiKey = org.ApiKey });
 });
 
+// Import kỹ thuật viên thật từ Ser_Engineer (dedupe theo Code)
+app.MapPost("/api/import/engineers", async (List<ImportEngineerDto> rows, AppDbContext db, ITenantContext tc) =>
+{
+    if (rows == null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu." });
+    int added = 0, skipped = 0;
+    var orgId = tc.OrgId;
+    var existCodes = db.Engineers.Where(e => e.OrgId == orgId).Select(e => e.Code).ToHashSet();
+    foreach (var row in rows)
+    {
+        if (string.IsNullOrWhiteSpace(row.Code)) { skipped++; continue; }
+        if (existCodes.Contains(row.Code.Trim())) { skipped++; continue; }
+        db.Engineers.Add(new Engineer { OrgId = orgId, Code = row.Code.Trim(), Name = row.Name?.Trim() ?? row.Code.Trim(), Skill = row.Skill, DealerCode = row.DealerCode ?? "", Active = row.Active });
+        existCodes.Add(row.Code.Trim()); added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skipped, total = added + skipped });
+});
+
+// Import lịch hẹn thật từ Ser_App/Ser_RO (dedupe theo Code)
+app.MapPost("/api/import/appointments", async (List<ImportApptDto> rows, AppDbContext db, ITenantContext tc) =>
+{
+    if (rows == null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu." });
+    int added = 0, skipped = 0;
+    var orgId = tc.OrgId;
+    var existCodes = db.Appointments.Where(a => a.OrgId == orgId).Select(a => a.Code).ToHashSet();
+    foreach (var row in rows)
+    {
+        if (string.IsNullOrWhiteSpace(row.Code)) { skipped++; continue; }
+        if (existCodes.Contains(row.Code.Trim())) { skipped++; continue; }
+        db.Appointments.Add(new Appointment
+        {
+            OrgId = orgId, Code = row.Code.Trim(),
+            CustomerName = row.CustomerName?.Trim() ?? "Khách hàng",
+            Phone = row.Phone ?? "", Vin = row.Vin, Plate = row.Plate,
+            ServiceType = row.ServiceType ?? "Bảo dưỡng",
+            PreferredAt = row.PreferredAt ?? DateTime.Now,
+            DealerCode = row.DealerCode ?? "", Engineer = row.Engineer,
+            Status = (ApptStatus)Math.Clamp(row.Status, 0, 5), Note = row.Note, RoNo = row.RoNo
+        });
+        existCodes.Add(row.Code.Trim()); added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skipped, total = added + skipped });
+});
+
 app.Run();
 
 record RegisterOrgDto(string Name);
+record ImportEngineerDto(string? Code, string? Name, string? Skill, string? DealerCode, bool Active);
+record ImportApptDto(string? Code, string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType, DateTime? PreferredAt, string? DealerCode, string? Engineer, int Status, string? Note, string? RoNo);
