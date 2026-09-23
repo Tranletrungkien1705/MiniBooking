@@ -20,6 +20,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WorkAssignment> WorkAssignments => Set<WorkAssignment>();
     public DbSet<WorkAssignmentStage> WorkAssignmentStages => Set<WorkAssignmentStage>();
     public DbSet<WorkAssignmentEngineer> WorkAssignmentEngineers => Set<WorkAssignmentEngineer>();
+    public DbSet<ServicePackage> ServicePackages => Set<ServicePackage>();
+    public DbSet<ServicePackageServiceItem> ServicePackageServiceItems => Set<ServicePackageServiceItem>();
+    public DbSet<ServicePackagePartItem> ServicePackagePartItems => Set<ServicePackagePartItem>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -37,5 +40,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<WorkAssignment>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
         b.Entity<WorkAssignmentStage>().HasIndex(x => new { x.OrgId, x.AssignmentId, x.WorkType });
         b.Entity<WorkAssignmentEngineer>().HasIndex(x => new { x.OrgId, x.AssignmentId, x.EngineerCode, x.WorkType });
+        b.Entity<ServicePackage>().HasIndex(x => new { x.OrgId, x.DealerCode, x.PackageNo }).IsUnique();
+        b.Entity<ServicePackageServiceItem>().HasIndex(x => new { x.OrgId, x.PackageId, x.SerCode });
+        b.Entity<ServicePackagePartItem>().HasIndex(x => new { x.OrgId, x.PackageId, x.PartCode });
     }
 }

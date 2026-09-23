@@ -293,6 +293,98 @@ public sealed class WorkAssignmentEngineer
     public string WorkType { get; set; } = "";     // SCC (chung) hoặc SCDS (đồng sơn)
 }
 
+/// <summary>Đối tượng thanh toán (chuyển đổi Ser_ROType): dùng cho dòng dịch vụ/phụ tùng trong gói.</summary>
+public static class ExpenseTypes
+{
+    public const string Repair    = "ROREPAIR";     // Báo giá sửa chữa
+    public const string Insurance = "ROINSURANCE";  // Báo giá bảo hiểm
+    public const string Warranty  = "ROWARRANTY";   // Bảo hành
+    public const string Local     = "LOCAL";        // Báo giá nội bộ
+    public const string General   = "GENERAL";      // Chung
+
+    public static readonly string[] All = { Repair, Insurance, Warranty, Local, General };
+
+    /// <summary>Đối tượng thanh toán hợp lệ cho dòng dịch vụ (Ser_ServicePackage_Create).</summary>
+    public static bool IsValidForService(string? code) =>
+        string.Equals(code, Repair, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(code, Local, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Đối tượng thanh toán hợp lệ cho dòng phụ tùng (Ser_ServicePackage_Create).</summary>
+    public static bool IsValidForPart(string? code) =>
+        string.Equals(code, Repair, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(code, Local, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(code, Insurance, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(code, Warranty, StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>Loại công việc (chuyển đổi Ser_ROType_New): phân loại dòng dịch vụ trong gói.</summary>
+public static class WorkTypes
+{
+    public const string BDD = "BDD";   // Bảo dưỡng định kỳ
+    public const string SCC = "SCC";   // Sửa chữa chung
+    public const string SCD = "SCD";   // Sửa chữa đồng
+    public const string SCS = "SCS";   // Sửa chữa sơn
+    public const string PDI = "PDI";   // Kiểm tra giao xe
+    public const string SPK = "SPK";   // Phụ kiện
+
+    public static readonly string[] All = { BDD, SCC, SCD, SCS, PDI, SPK };
+}
+
+/// <summary>Gói dịch vụ (chuyển đổi Ser_ServicePackage): nhóm sẵn các công việc + phụ tùng theo 1 giá gói,
+/// dùng để tạo nhanh lệnh sửa chữa (Ser_ServicePackage_Get_SearchCreateRO_DL).
+/// IsUserBasePrice: 1 = lấy giá chung, 0 = lấy giá riêng của gói.</summary>
+public sealed class ServicePackage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";        // DealerCode
+    public string PackageNo { get; set; } = "";         // ServicePackageNo (unique theo Org+Dealer)
+    public string PackageName { get; set; } = "";       // ServicePackageName
+    public string? TakingTime { get; set; }              // TakingTime — thời gian sửa chữa dự kiến
+    public string? Description { get; set; }             // Description
+    public string? Creator { get; set; }                 // Creator
+    public bool IsPublicFlag { get; set; }               // IsPublicFlag — cờ phạm vi công khai
+    public bool IsUserBasePrice { get; set; }            // 1 = giá chung, 0 = giá riêng của gói
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; }
+    public List<ServicePackageServiceItem> ServiceItems { get; set; } = new();
+    public List<ServicePackagePartItem> PartItems { get; set; } = new();
+}
+
+/// <summary>Dòng dịch vụ trong gói (chuyển đổi Ser_ServicePackageServiceItems): công việc + hệ số + giờ đm + VAT + đơn giá.</summary>
+public sealed class ServicePackageServiceItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PackageId { get; set; }                  // FK → ServicePackage
+    public string SerCode { get; set; } = "";           // SerCode (mã dịch vụ)
+    public string SerName { get; set; } = "";           // SerName
+    public decimal Factor { get; set; } = 1m;            // Factor — hệ số
+    public decimal ActManHour { get; set; }              // ActManHour — giờ đm
+    public decimal VAT { get; set; }                     // VAT — thuế
+    public decimal Price { get; set; }                   // Price — đơn giá
+    public string ExpenseType { get; set; } = "";       // ExpenseType — đối tượng thanh toán (ROREPAIR/LOCAL)
+    public string ROType { get; set; } = "";            // ROType — loại công việc (BDD/SCC/...)
+    public string? Note { get; set; }
+}
+
+/// <summary>Dòng phụ tùng trong gói (chuyển đổi Ser_ServicePackagePartItems): phụ tùng + số lượng + VAT + đơn giá.</summary>
+public sealed class ServicePackagePartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PackageId { get; set; }                  // FK → ServicePackage
+    public string PartCode { get; set; } = "";          // PartCode (mã phụ tùng)
+    public string PartName { get; set; } = "";          // VieName
+    public string Unit { get; set; } = "";              // Unit — đơn vị tính
+    public decimal Factor { get; set; } = 1m;            // Factor — hệ số
+    public decimal Quantity { get; set; }                // Quantity — số lượng
+    public decimal VAT { get; set; }                     // VAT — thuế
+    public decimal Price { get; set; }                   // Price — đơn giá
+    public string ExpenseType { get; set; } = "";       // ExpenseType — đối tượng thanh toán
+    public string? Note { get; set; }
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

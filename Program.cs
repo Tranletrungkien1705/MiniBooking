@@ -400,6 +400,40 @@ app.MapDelete("/api/work-assignments/{roId}", async (string roId, IBookingServic
     return r is null ? Results.NotFound(new { roId, error = "Không thấy phân công công việc." }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// ---- Gói dịch vụ (Ser_ServicePackage): nhóm sẵn công việc + phụ tùng theo 1 giá gói ----
+app.MapPost("/api/service-packages", async (CreateServicePackageDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PackageNo) || string.IsNullOrWhiteSpace(dto.PackageName) || string.IsNullOrWhiteSpace(dto.DealerCode))
+        return Results.BadRequest(new { error = "Cần PackageNo, PackageName và DealerCode." });
+    try { return Results.Ok(await svc.CreateServicePackageAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/service-packages", async (IBookingService svc, string? dealer, string? keyword, bool? isPublic) =>
+    Results.Ok(await svc.ListServicePackagesAsync(dealer, keyword, isPublic))).RequireAuthorization();
+
+app.MapGet("/api/service-packages/{id:long}", async (long id, IBookingService svc) =>
+{
+    var r = await svc.GetServicePackageAsync(id);
+    return r is null ? Results.NotFound(new { id, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapPut("/api/service-packages/{id:long}", async (long id, UpdateServicePackageDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateServicePackageAsync(id, dto);
+        return r is null ? Results.NotFound(new { id, error = "Không thấy gói dịch vụ." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { id, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapDelete("/api/service-packages/{id:long}", async (long id, IBookingService svc) =>
+{
+    var r = await svc.DeleteServicePackageAsync(id);
+    return r is null ? Results.NotFound(new { id, error = "Không thấy gói dịch vụ." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

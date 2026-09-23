@@ -36,6 +36,13 @@ public record CreateWorkAssignmentDto(string RoId, string? RoNo, string? DealerC
     List<WorkStageDto>? Stages, List<WorkEngineerDto>? Engineers);
 public record UpdateWorkAssignmentDto(string? RoNo, string? DealerCode, string? WorkTypeStart, string? WorkTypeFinish,
     List<WorkStageDto>? Stages, List<WorkEngineerDto>? Engineers);
+// Ser_ServicePackage: gói dịch vụ (nhóm sẵn công việc + phụ tùng theo 1 giá gói).
+public record PackageServiceItemDto(string SerCode, string? SerName, decimal? Factor, decimal? ActManHour, decimal? VAT, decimal? Price, string? ExpenseType, string? ROType, string? Note);
+public record PackagePartItemDto(string PartCode, string? PartName, string? Unit, decimal? Factor, decimal? Quantity, decimal? VAT, decimal? Price, string? ExpenseType, string? Note);
+public record CreateServicePackageDto(string? PackageNo, string? PackageName, string? DealerCode, string? TakingTime, string? Description,
+    string? Creator, bool? IsPublicFlag, bool? IsUserBasePrice, List<PackageServiceItemDto>? ServiceItems, List<PackagePartItemDto>? PartItems);
+public record UpdateServicePackageDto(string? PackageName, string? DealerCode, string? TakingTime, string? Description,
+    bool? IsPublicFlag, bool? IsUserBasePrice, List<PackageServiceItemDto>? ServiceItems, List<PackagePartItemDto>? PartItems);
 
 public interface IBookingService
 {
@@ -92,6 +99,11 @@ public interface IBookingService
     Task<object?> GetWorkAssignmentAsync(string roId);                            // chi tiết phân công theo ROID
     Task<object?> UpdateWorkAssignmentAsync(string roId, UpdateWorkAssignmentDto dto);  // sửa phân công (Ser_AssignmentWork_UpdateDL)
     Task<object?> DeleteWorkAssignmentAsync(string roId);                         // xóa phân công (Ser_AssignmentWork_DeleteDL)
+    Task<object> CreateServicePackageAsync(CreateServicePackageDto dto);          // tạo gói dịch vụ (Ser_ServicePackage_Create)
+    Task<object> ListServicePackagesAsync(string? dealer, string? keyword, bool? isPublic);  // danh sách gói dịch vụ (Ser_ServicePackage_Get_DL)
+    Task<object?> GetServicePackageAsync(long id);                                // chi tiết gói dịch vụ (kèm dịch vụ + phụ tùng)
+    Task<object?> UpdateServicePackageAsync(long id, UpdateServicePackageDto dto); // sửa gói dịch vụ (Ser_ServicePackage_Update)
+    Task<object?> DeleteServicePackageAsync(long id);                             // xóa gói dịch vụ (Ser_ServicePackage_Delete)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -1298,6 +1310,251 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             stageCount = stages.Count, totalPlanHours,
             stages = stageViews,
             engineers = engs.Select(e => new { e.EngineerCode, e.WorkType, workTypeText = WorkStages.Text(e.WorkType) })
+        };
+    }
+
+    // ===== Gói dịch vụ (Ser_ServicePackage) =====
+    // Tạo gói dịch vụ: nhóm sẵn công việc + phụ tùng theo 1 giá gói. Dedupe theo (DealerCode, PackageNo).
+    // Rule Ser_ServicePackage_Create: PackageNo/DealerCode/PackageName bắt buộc; phải có ít nhất 1 dòng dịch vụ;
+    // mỗi dòng dịch vụ cần SerCode + ExpenseType (ROREPAIR/LOCAL) + ROType; dòng phụ tùng cần PartCode + ExpenseType hợp lệ.
+    public async Task<object> CreateServicePackageAsync(CreateServicePackageDto dto)
+    {
+        var packageNo = dto.PackageNo?.Trim().ToUpperInvariant() ?? "";
+        var dealerCode = dto.DealerCode?.Trim() ?? "";
+        var packageName = dto.PackageName?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(packageNo)) throw new InvalidOperationException("Cần PackageNo (mã gói dịch vụ).");
+        if (packageNo.Length > 50) throw new InvalidOperationException("Mã gói dịch vụ vượt quá 50 ký tự.");
+        if (string.IsNullOrWhiteSpace(dealerCode)) throw new InvalidOperationException("Cần DealerCode (mã đại lý).");
+        if (string.IsNullOrWhiteSpace(packageName)) throw new InvalidOperationException("Cần PackageName (tên gói dịch vụ).");
+        if (packageName.Length > 200) throw new InvalidOperationException("Tên gói dịch vụ vượt quá 200 ký tự.");
+        if (!string.IsNullOrWhiteSpace(dto.Description) && dto.Description!.Length > 500)
+            throw new InvalidOperationException("Mô tả vượt quá 500 ký tự.");
+
+        // Ser_ServicePackageNo_Exist: mã gói không được trùng trong cùng đại lý.
+        var dup = await db.ServicePackages.AnyAsync(x => x.OrgId == Org && x.DealerCode == dealerCode && x.PackageNo == packageNo);
+        if (dup) throw new InvalidOperationException($"Mã gói dịch vụ '{packageNo}' đã tồn tại cho đại lý '{dealerCode}'.");
+
+        var serviceItems = ValidatePackageServiceItems(dto.ServiceItems);
+        var partItems = ValidatePackagePartItems(dto.PartItems);
+
+        var pkg = new ServicePackage
+        {
+            OrgId = Org, DealerCode = dealerCode, PackageNo = packageNo, PackageName = packageName,
+            TakingTime = dto.TakingTime?.Trim(), Description = dto.Description?.Trim(), Creator = dto.Creator?.Trim(),
+            IsPublicFlag = dto.IsPublicFlag ?? false, IsUserBasePrice = dto.IsUserBasePrice ?? false
+        };
+        db.ServicePackages.Add(pkg);
+        await db.SaveChangesAsync();   // lấy pkg.Id
+
+        foreach (var s in serviceItems)
+            db.ServicePackageServiceItems.Add(new ServicePackageServiceItem
+            {
+                OrgId = Org, PackageId = pkg.Id, SerCode = s.SerCode, SerName = s.SerName,
+                Factor = s.Factor, ActManHour = s.ActManHour, VAT = s.VAT, Price = s.Price,
+                ExpenseType = s.ExpenseType, ROType = s.ROType, Note = s.Note
+            });
+        foreach (var p in partItems)
+            db.ServicePackagePartItems.Add(new ServicePackagePartItem
+            {
+                OrgId = Org, PackageId = pkg.Id, PartCode = p.PartCode, PartName = p.PartName, Unit = p.Unit,
+                Factor = p.Factor, Quantity = p.Quantity, VAT = p.VAT, Price = p.Price, ExpenseType = p.ExpenseType, Note = p.Note
+            });
+        await db.SaveChangesAsync();
+        return await BuildPackageViewAsync(pkg);
+    }
+
+    // Danh sách gói dịch vụ; keyword tìm theo mã/tên; isPublic lọc theo cờ phạm vi.
+    public async Task<object> ListServicePackagesAsync(string? dealer, string? keyword, bool? isPublic)
+    {
+        var q = db.ServicePackages.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            var k = keyword.Trim();
+            q = q.Where(x => x.PackageNo.Contains(k) || x.PackageName.Contains(k));
+        }
+        if (isPublic.HasValue) q = q.Where(x => x.IsPublicFlag == isPublic.Value);
+        var pkgs = await q.OrderBy(x => x.PackageNo).Take(500).ToListAsync();
+        var ids = pkgs.Select(x => x.Id).ToArray();
+        var svcCounts = await db.ServicePackageServiceItems.Where(x => x.OrgId == Org && ids.Contains(x.PackageId))
+            .GroupBy(x => x.PackageId).Select(g => new { g.Key, c = g.Count() }).ToListAsync();
+        var partCounts = await db.ServicePackagePartItems.Where(x => x.OrgId == Org && ids.Contains(x.PackageId))
+            .GroupBy(x => x.PackageId).Select(g => new { g.Key, c = g.Count() }).ToListAsync();
+        var items = pkgs.Select(p => new
+        {
+            p.Id, p.PackageNo, p.PackageName, p.DealerCode, p.TakingTime, p.Description, p.Creator,
+            p.IsPublicFlag, p.IsUserBasePrice, p.CreatedAt, p.UpdatedAt,
+            serviceItemCount = svcCounts.FirstOrDefault(x => x.Key == p.Id)?.c ?? 0,
+            partItemCount = partCounts.FirstOrDefault(x => x.Key == p.Id)?.c ?? 0
+        });
+        return new { count = pkgs.Count, items };
+    }
+
+    public async Task<object?> GetServicePackageAsync(long id)
+    {
+        var pkg = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        return pkg is null ? null : await BuildPackageViewAsync(pkg);
+    }
+
+    // Sửa gói dịch vụ: cập nhật header + thay toàn bộ danh sách dịch vụ & phụ tùng (delete olds → insert).
+    public async Task<object?> UpdateServicePackageAsync(long id, UpdateServicePackageDto dto)
+    {
+        var pkg = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (pkg is null) return null;
+        if (!string.IsNullOrWhiteSpace(dto.PackageName))
+        {
+            if (dto.PackageName!.Trim().Length > 200) throw new InvalidOperationException("Tên gói dịch vụ vượt quá 200 ký tự.");
+            pkg.PackageName = dto.PackageName.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(dto.DealerCode)) pkg.DealerCode = dto.DealerCode!.Trim();
+        if (dto.TakingTime != null) pkg.TakingTime = dto.TakingTime.Trim();
+        if (dto.Description != null)
+        {
+            if (dto.Description.Length > 500) throw new InvalidOperationException("Mô tả vượt quá 500 ký tự.");
+            pkg.Description = dto.Description.Trim();
+        }
+        if (dto.IsPublicFlag.HasValue) pkg.IsPublicFlag = dto.IsPublicFlag.Value;
+        if (dto.IsUserBasePrice.HasValue) pkg.IsUserBasePrice = dto.IsUserBasePrice.Value;
+        pkg.UpdatedAt = DateTime.Now;
+
+        if (dto.ServiceItems is not null)
+        {
+            var serviceItems = ValidatePackageServiceItems(dto.ServiceItems);
+            var olds = await db.ServicePackageServiceItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id).ToListAsync();
+            db.ServicePackageServiceItems.RemoveRange(olds);
+            foreach (var s in serviceItems)
+                db.ServicePackageServiceItems.Add(new ServicePackageServiceItem
+                {
+                    OrgId = Org, PackageId = pkg.Id, SerCode = s.SerCode, SerName = s.SerName,
+                    Factor = s.Factor, ActManHour = s.ActManHour, VAT = s.VAT, Price = s.Price,
+                    ExpenseType = s.ExpenseType, ROType = s.ROType, Note = s.Note
+                });
+        }
+        if (dto.PartItems is not null)
+        {
+            var partItems = ValidatePackagePartItems(dto.PartItems);
+            var olds = await db.ServicePackagePartItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id).ToListAsync();
+            db.ServicePackagePartItems.RemoveRange(olds);
+            foreach (var p in partItems)
+                db.ServicePackagePartItems.Add(new ServicePackagePartItem
+                {
+                    OrgId = Org, PackageId = pkg.Id, PartCode = p.PartCode, PartName = p.PartName, Unit = p.Unit,
+                    Factor = p.Factor, Quantity = p.Quantity, VAT = p.VAT, Price = p.Price, ExpenseType = p.ExpenseType, Note = p.Note
+                });
+        }
+        await db.SaveChangesAsync();
+        return await BuildPackageViewAsync(pkg);
+    }
+
+    // Xóa gói dịch vụ + toàn bộ dòng dịch vụ/phụ tùng của gói (Ser_ServicePackage_Delete).
+    public async Task<object?> DeleteServicePackageAsync(long id)
+    {
+        var pkg = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (pkg is null) return null;
+        var svc = await db.ServicePackageServiceItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id).ToListAsync();
+        var parts = await db.ServicePackagePartItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id).ToListAsync();
+        db.ServicePackageServiceItems.RemoveRange(svc);
+        db.ServicePackagePartItems.RemoveRange(parts);
+        db.ServicePackages.Remove(pkg);
+        await db.SaveChangesAsync();
+        return new { pkg.Id, pkg.PackageNo, removedServiceItems = svc.Count, removedPartItems = parts.Count };
+    }
+
+    // Chuẩn hóa + kiểm tra danh sách dòng dịch vụ của gói (SerServicePackageCreate_*).
+    private static List<ServicePackageServiceItem> ValidatePackageServiceItems(List<PackageServiceItemDto>? items)
+    {
+        var list = new List<ServicePackageServiceItem>();
+        if (items is null || items.Count == 0)
+            throw new InvalidOperationException("Gói dịch vụ phải có ít nhất 1 dòng dịch vụ (SerServicePackageCreate_ServiceTableNotBlank).");
+        var seen = new HashSet<string>();
+        foreach (var i in items)
+        {
+            if (string.IsNullOrWhiteSpace(i.SerCode))
+                throw new InvalidOperationException("Dòng dịch vụ thiếu SerCode (SerServicePackageCreate_ServiceNotInList).");
+            var serCode = i.SerCode.Trim().ToUpperInvariant();
+            if (!seen.Add(serCode)) continue;   // dedupe theo SerCode
+            var expenseType = i.ExpenseType?.Trim().ToUpperInvariant() ?? "";
+            if (string.IsNullOrWhiteSpace(expenseType))
+                throw new InvalidOperationException($"Dòng dịch vụ '{serCode}' thiếu ExpenseType (đối tượng thanh toán).");
+            if (!ExpenseTypes.IsValidForService(expenseType))
+                throw new InvalidOperationException($"Dòng dịch vụ '{serCode}' có ExpenseType '{expenseType}' không hợp lệ (chỉ ROREPAIR/LOCAL).");
+            var roType = i.ROType?.Trim().ToUpperInvariant() ?? "";
+            if (string.IsNullOrWhiteSpace(roType))
+                throw new InvalidOperationException($"Dòng dịch vụ '{serCode}' thiếu ROType (loại công việc).");
+            // SerServicePackageCreate_Invalid_ExpenseType: công việc BDD chỉ được ROREPAIR/LOCAL.
+            if (roType == WorkTypes.BDD && !ExpenseTypes.IsValidForService(expenseType))
+                throw new InvalidOperationException($"Công việc BDD '{serCode}' chỉ được ExpenseType ROREPAIR/LOCAL.");
+            list.Add(new ServicePackageServiceItem
+            {
+                SerCode = serCode, SerName = string.IsNullOrWhiteSpace(i.SerName) ? serCode : i.SerName!.Trim(),
+                Factor = i.Factor is > 0 ? i.Factor!.Value : 1m,
+                ActManHour = i.ActManHour is > 0 ? i.ActManHour!.Value : 0m,
+                VAT = i.VAT is > 0 ? i.VAT!.Value : 0m,
+                Price = i.Price is > 0 ? i.Price!.Value : 0m,
+                ExpenseType = expenseType, ROType = roType, Note = i.Note
+            });
+        }
+        return list;
+    }
+
+    // Chuẩn hóa + kiểm tra danh sách dòng phụ tùng của gói (SerServicePackageCreate_Part*).
+    private static List<ServicePackagePartItem> ValidatePackagePartItems(List<PackagePartItemDto>? items)
+    {
+        var list = new List<ServicePackagePartItem>();
+        if (items is null) return list;
+        var seen = new HashSet<string>();
+        foreach (var i in items)
+        {
+            if (string.IsNullOrWhiteSpace(i.PartCode))
+                throw new InvalidOperationException("Dòng phụ tùng thiếu PartCode (SerServicePackageCreate_PartNotInStock).");
+            var partCode = i.PartCode.Trim().ToUpperInvariant();
+            if (!seen.Add(partCode)) continue;   // dedupe theo PartCode
+            var expenseType = i.ExpenseType?.Trim().ToUpperInvariant() ?? "";
+            if (string.IsNullOrWhiteSpace(expenseType))
+                throw new InvalidOperationException($"Dòng phụ tùng '{partCode}' thiếu ExpenseType (đối tượng thanh toán).");
+            if (!ExpenseTypes.IsValidForPart(expenseType))
+                throw new InvalidOperationException($"Dòng phụ tùng '{partCode}' có ExpenseType '{expenseType}' không hợp lệ (ROREPAIR/LOCAL/ROINSURANCE/ROWARRANTY).");
+            list.Add(new ServicePackagePartItem
+            {
+                PartCode = partCode, PartName = string.IsNullOrWhiteSpace(i.PartName) ? partCode : i.PartName!.Trim(),
+                Unit = i.Unit?.Trim() ?? "",
+                Factor = i.Factor is > 0 ? i.Factor!.Value : 1m,
+                Quantity = i.Quantity is > 0 ? i.Quantity!.Value : 0m,
+                VAT = i.VAT is > 0 ? i.VAT!.Value : 0m,
+                Price = i.Price is > 0 ? i.Price!.Value : 0m,
+                ExpenseType = expenseType, Note = i.Note
+            });
+        }
+        return list;
+    }
+
+    // Dựng view 1 gói dịch vụ: header + dòng dịch vụ + dòng phụ tùng + tổng tiền (Amount = Price*Factor*Quantity).
+    private async Task<object> BuildPackageViewAsync(ServicePackage pkg)
+    {
+        var svc = await db.ServicePackageServiceItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id)
+            .OrderBy(x => x.SerCode).ToListAsync();
+        var parts = await db.ServicePackagePartItems.Where(x => x.OrgId == Org && x.PackageId == pkg.Id)
+            .OrderBy(x => x.PartCode).ToListAsync();
+        var svcViews = svc.Select(s => new
+        {
+            s.Id, s.SerCode, s.SerName, s.Factor, s.ActManHour, s.VAT, s.Price, s.ExpenseType, s.ROType, s.Note,
+            amount = Math.Round(s.Price * s.Factor, 2)
+        });
+        var partViews = parts.Select(p => new
+        {
+            p.Id, p.PartCode, p.PartName, p.Unit, p.Factor, p.Quantity, p.VAT, p.Price, p.ExpenseType, p.Note,
+            amount = Math.Round(p.Price * p.Factor * p.Quantity, 2)
+        });
+        var serviceAmount = svc.Sum(s => s.Price * s.Factor);
+        var partAmount = parts.Sum(p => p.Price * p.Factor * p.Quantity);
+        return new
+        {
+            pkg.Id, pkg.PackageNo, pkg.PackageName, pkg.DealerCode, pkg.TakingTime, pkg.Description, pkg.Creator,
+            pkg.IsPublicFlag, pkg.IsUserBasePrice, pkg.CreatedAt, pkg.UpdatedAt,
+            serviceItemCount = svc.Count, partItemCount = parts.Count,
+            serviceAmount = Math.Round(serviceAmount, 2), partAmount = Math.Round(partAmount, 2),
+            totalAmount = Math.Round(serviceAmount + partAmount, 2),
+            serviceItems = svcViews, partItems = partViews
         };
     }
 }
