@@ -36,6 +36,11 @@ public record CreateReceptionFormDto(string? ReceptionFNo, string? DealerCode, s
 public record DeliverReceptionFormDto(string? RoNo, string? Note);
 // Ser_App_GetStatusList01DL: bộ lọc nâng cao danh sách lịch hẹn (đa giá trị '|', mẫu biển số, khoảng thời gian, timeline).
 public record SearchAppointmentsDto(string? DealerCodes, string? Statuses, string? PlatePattern, string? CustomerName, string? Creator, string? AppTypeCodes, string? DateFrom, string? DateTimeline, int? RecordStart, int? RecordCount);
+// Ser_App_GetNewDL: tìm lịch hẹn theo bộ lọc "GetNew" (AppId/AppNo/CreatedDate/Creator/AppStatus/AppDateTime/PlateNo/CusName/DealerCode)
+// + phân trang + tùy chọn mở rộng chi tiết (kèm dịch vụ & phụ tùng ngay trong kết quả).
+public record GetNewAppointmentsDto(string? AppIds, string? DealerCodes, string? PlateNos, string? AppNos, string? CustomerNames,
+    string? CreatedDates, string? AppDateTimes, string? Statuses, string? Creators,
+    bool? IncludeApp, bool? IncludeServiceItems, bool? IncludePartItems, int? RecordStart, int? RecordCount);
 // Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
 public record UpdateAppointmentDto(string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType,
     DateTime? PreferredAt, string? DealerCode, string? Note, string? BayCode, string? AppTypeCode, DateTime? SlotTo,
@@ -114,6 +119,7 @@ public interface IBookingService
     Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto);  // giao xe (P → A)
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
     Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
+    Task<object> GetNewAppointmentsAsync(GetNewAppointmentsDto dto);         // tìm lịch hẹn "GetNew" + mở rộng chi tiết (Ser_App_GetNewDL)
     Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto);  // sửa lịch hẹn (Ser_App_UpdateDL)
     Task<object> CreateWorkAssignmentAsync(CreateWorkAssignmentDto dto);          // phân công công việc sửa chữa (Ser_AssignmentWork_CreateDL)
     Task<object> ListWorkAssignmentsAsync(string? roId, string? dealer, string? date);  // danh sách phân công (Ser_AssignmentWork_Get_DL)
@@ -1277,7 +1283,93 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         return new { total, recordStart = start, recordCount = count, count = items.Count, items };
     }
 
-    // Tách danh sách '|'-separated thành mảng đã trim/upper, bỏ rỗng (Ser_App_GetStatusList01DL).
+    // ===== Tìm lịch hẹn "GetNew" + mở rộng chi tiết (Ser_App_GetNewDL) =====
+    // Bộ lọc theo AppId/AppNo/CreatedDate/Creator/AppStatus/AppDateTime/PlateNo/CusName/DealerCode (đa giá trị '|'),
+    // phân trang RecordStart/RecordCount, và tùy chọn kèm chi tiết (Ser_App + Ser_AppServiceItems + Ser_AppPartItems)
+    // ngay trong kết quả (IsGet_Ser_App / IsGet_Ser_AppServiceItems / IsGet_Ser_AppPartItems).
+    public async Task<object> GetNewAppointmentsAsync(GetNewAppointmentsDto dto)
+    {
+        var q = db.Appointments.Where(a => a.OrgId == Org);
+
+        // AppIdList: '|'-separated → IN (...) trên mã lịch hẹn (Ser_App.AppId ↔ Appointment.Code).
+        var appIds = SplitList(dto.AppIds);
+        if (appIds.Length > 0) q = q.Where(a => appIds.Contains(a.Code));
+
+        // DealerCodeList: '|'-separated → IN (...).
+        var dealers = SplitList(dto.DealerCodes);
+        if (dealers.Length > 0) q = q.Where(a => dealers.Contains(a.DealerCode));
+
+        // PlateNoList: '|'-separated → IN (...) trên biển số.
+        var plates = SplitList(dto.PlateNos);
+        if (plates.Length > 0) q = q.Where(a => a.Plate != null && plates.Contains(a.Plate.ToUpper()));
+
+        // AppNoList: '|'-separated → IN (...) trên mã lịch hẹn (AppNo ↔ Code).
+        var appNos = SplitList(dto.AppNos);
+        if (appNos.Length > 0) q = q.Where(a => appNos.Contains(a.Code));
+
+        // CusNameList: '|'-separated → IN (...) trên tên khách (chứa, không phân biệt hoa thường theo DB).
+        var names = SplitList(dto.CustomerNames);
+        if (names.Length > 0) q = q.Where(a => names.Any(n => a.CustomerName.ToUpper().Contains(n)));
+
+        // CreatedDateList: '|'-separated → IN (...) theo ngày tạo (so khớp ngày).
+        var createdDates = SplitList(dto.CreatedDates).Select(x => DateTime.TryParse(x, out var d) ? d.Date : (DateTime?)null)
+            .Where(d => d.HasValue).Select(d => d!.Value).ToArray();
+        if (createdDates.Length > 0) q = q.Where(a => createdDates.Contains(a.CreatedAt.Date));
+
+        // AppDateTimeList: '|'-separated → IN (...) theo ngày hẹn (AppDateTimeFrom ↔ PreferredAt).
+        var appDates = SplitList(dto.AppDateTimes).Select(x => DateTime.TryParse(x, out var d) ? d.Date : (DateTime?)null)
+            .Where(d => d.HasValue).Select(d => d!.Value).ToArray();
+        if (appDates.Length > 0) q = q.Where(a => appDates.Contains(a.PreferredAt.Date));
+
+        // AppStatusList: '|'-separated mã trạng thái nguồn (1..5) → map sang ApptStatus.
+        var statuses = SplitList(dto.Statuses).Select(ParseSourceStatus).Where(s => s.HasValue).Select(s => s!.Value).ToArray();
+        if (statuses.Length > 0) q = q.Where(a => statuses.Contains(a.Status));
+
+        // CreatorList: '|'-separated → IN (...) trên người tạo (MiniBooking lưu Creator qua Engineer như proxy).
+        var creators = SplitList(dto.Creators);
+        if (creators.Length > 0) q = q.Where(a => a.Engineer != null && creators.Contains(a.Engineer.ToUpper()));
+
+        var total = await q.CountAsync();
+
+        // Phân trang (RecordStart 0-based, RecordCount mặc định 50, tối đa 500).
+        var start = Math.Max(0, dto.RecordStart ?? 0);
+        var count = Math.Clamp(dto.RecordCount ?? 50, 1, 500);
+        var rows = await q.OrderBy(a => a.PreferredAt).ThenBy(a => a.Id)
+            .Skip(start).Take(count).ToListAsync();
+
+        // IsGet_Ser_App: mặc định true (trả thông tin lịch hẹn).
+        var includeApp = dto.IncludeApp ?? true;
+        var includeServices = dto.IncludeServiceItems ?? false;
+        var includeParts = dto.IncludePartItems ?? false;
+
+        var codes = rows.Select(a => a.Code).ToArray();
+        var services = includeServices
+            ? await db.AppServiceItems.Where(x => x.OrgId == Org && codes.Contains(x.AppCode)).ToListAsync()
+            : new List<AppServiceItem>();
+        var parts = includeParts
+            ? await db.AppPartItems.Where(x => x.OrgId == Org && codes.Contains(x.AppCode)).ToListAsync()
+            : new List<AppPartItem>();
+
+        var items = rows.Select(a => new
+        {
+            a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
+            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
+            a.RoNo, a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo, a.CreatedAt, a.ContactedAt, a.ContactResult,
+            serviceItems = includeServices
+                ? services.Where(s => s.AppCode == a.Code).Select(s => new { s.Id, s.SerCode, s.SerName, s.StdManHour, s.Note }).ToList()
+                : null,
+            partItems = includeParts
+                ? parts.Where(p => p.AppCode == a.Code).Select(p => new { p.Id, p.PartCode, p.PartName, p.Unit, p.Quantity, p.InventoryQuantity, p.Note }).ToList()
+                : null
+        }).ToList();
+
+        return new
+        {
+            total, recordStart = start, recordCount = count, count = items.Count,
+            includeApp, includeServiceItems = includeServices, includePartItems = includeParts, items
+        };
+    }
+
     private static string[] SplitList(string? raw) =>
         string.IsNullOrWhiteSpace(raw)
             ? Array.Empty<string>()

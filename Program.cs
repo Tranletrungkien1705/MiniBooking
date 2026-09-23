@@ -102,6 +102,16 @@ app.MapGet("/api/appointments/search", async (IBookingService svc, string? deale
         dealerCodes, statuses, platePattern, customerName, creator, appTypeCodes, dateFrom, dateTimeline, recordStart, recordCount)))
 ).RequireAuthorization();
 
+// Ser_App_GetNewDL: tìm lịch hẹn theo bộ lọc "GetNew" (AppId/AppNo/CreatedDate/Creator/AppStatus/AppDateTime/PlateNo/CusName/DealerCode)
+// + phân trang + tùy chọn mở rộng chi tiết (kèm dịch vụ & phụ tùng ngay trong kết quả).
+app.MapGet("/api/appointments/get-new", async (IBookingService svc, string? appIds, string? dealerCodes, string? plateNos,
+    string? appNos, string? customerNames, string? createdDates, string? appDateTimes, string? statuses, string? creators,
+    bool? includeApp, bool? includeServiceItems, bool? includePartItems, int? recordStart, int? recordCount) =>
+    Results.Ok(await svc.GetNewAppointmentsAsync(new GetNewAppointmentsDto(
+        appIds, dealerCodes, plateNos, appNos, customerNames, createdDates, appDateTimes, statuses, creators,
+        includeApp, includeServiceItems, includePartItems, recordStart, recordCount)))
+).RequireAuthorization();
+
 // Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
 app.MapPut("/api/appointments/{code}", async (string code, UpdateAppointmentDto dto, IBookingService svc) =>
 {
