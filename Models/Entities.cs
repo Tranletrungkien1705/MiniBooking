@@ -229,6 +229,26 @@ public sealed class RepairOrderServiceItem
     public string? StatusChangedBy { get; set; }   // LogLUBy — người đổi trạng thái
 }
 
+/// <summary>Dòng phụ tùng trong lệnh sửa chữa (chuyển đổi Ser_ROPartItems): mỗi phụ tùng khách đồng ý
+/// thay, kèm hệ số/đơn giá/VAT và số lượng. Dùng để tính doanh thu lệnh sửa chữa
+/// (Ser_RO_Sumary_DL: Revenue = Σ phụ tùng + Σ công việc, mỗi dòng = Price*Quantity*Factor*(1+VAT/100)).</summary>
+public sealed class RepairOrderPartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID — lệnh sửa chữa
+    public string PartCode { get; set; } = "";    // PartCode (mã phụ tùng)
+    public string PartName { get; set; } = "";    // VieName — tên phụ tùng
+    public string Unit { get; set; } = "";        // Unit — đơn vị tính
+    public decimal Factor { get; set; } = 1m;      // Factor — hệ số giá
+    public decimal Quantity { get; set; }          // Quantity — số lượng
+    public decimal Price { get; set; }             // Price — đơn giá trước VAT
+    public decimal VAT { get; set; }               // VAT — % thuế
+    public string ExpenseType { get; set; } = ""; // ExpenseType — đối tượng thanh toán (ROREPAIR/ROWARRANTY/ROINSURANCE/LOCAL)
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Vòng đời lệnh sửa chữa (chuyển đổi Ser_RO_Stage): máy trạng thái 12 bước của Ser_RO.
 /// CRE (lập báo giá) → PRT (in báo giá) → W4P (đợi phụ tùng) → HPA (có phụ tùng) → HRO (lập lệnh SC)
 /// → INGA (vào xưởng) → RPRD (sửa xong) → CEND (kiểm tra cuối) → PAID (đã thanh toán) → FNS (hoàn tất).
