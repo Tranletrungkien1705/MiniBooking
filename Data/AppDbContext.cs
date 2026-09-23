@@ -15,6 +15,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AppServiceItem> AppServiceItems => Set<AppServiceItem>();
     public DbSet<AppPartItem> AppPartItems => Set<AppPartItem>();
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
+    public DbSet<PostServiceCare> PostServiceCares => Set<PostServiceCare>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -27,5 +28,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<AppServiceItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.SerCode });
         b.Entity<AppPartItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.PartCode });
         b.Entity<RepairOrder>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
+        b.Entity<PostServiceCare>().HasIndex(x => new { x.OrgId, x.CusCareId }).IsUnique();
     }
 }

@@ -172,6 +172,35 @@ public sealed class RepairOrder
     public DateTime? LinkedAt { get; set; }        // thời điểm gắn cuộc hẹn
 }
 
+/// <summary>Chăm sóc KH sau dịch vụ 72h (chuyển đổi Ser_CustomerCare72h): khảo sát hài lòng sau khi giao xe.
+/// Vòng đời: PEND (chưa liên hệ) → CINFB (đã liên hệ, chưa phản hồi) / CIFB (đã liên hệ, đã phản hồi) / REJ (bỏ qua).
+/// Gắn với 1 lệnh sửa chữa (ROID) + ngày giao xe (FinishedDate).</summary>
+public sealed class PostServiceCare
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusCareId { get; set; } = "";      // CusCareID (mã phiếu chăm sóc)
+    public string? RoId { get; set; }                 // ROID — lệnh sửa chữa nguồn
+    public string? RoNo { get; set; }                 // RONo
+    public string CustomerName { get; set; } = "";   // CusName
+    public string? Phone { get; set; }                // Mobile/Tel
+    public string? Plate { get; set; }                // PlateNo
+    public string? FrameNo { get; set; }              // FrameNo
+    public string DealerCode { get; set; } = "";
+    public DateTime? FinishedDate { get; set; }       // FinishedDate — ngày giao xe (mốc tính 72h)
+    public string Status { get; set; } = "PEND";     // PEND/CINFB/CIFB/REJ
+    public DateTime? ContactDate { get; set; }        // ContactDate — ngày liên hệ
+    // Trả lời khảo sát (Ser_CustomerCare72h):
+    public string? FyourCSSH { get; set; }            // Đánh giá chăm sóc khách hàng
+    public string? WFBasicNeeds { get; set; }         // Nhu cầu cơ bản được đáp ứng
+    public string? YourCarProblem { get; set; }       // Vấn đề của xe sau dịch vụ
+    public string? YourRIWN { get; set; }             // Sẽ giới thiệu (Recommend/Introduce/Would)
+    public string? YourSatisfyQSv { get; set; }       // Hài lòng chất lượng dịch vụ
+    public string? YourHopeOfOur { get; set; }        // Mong muốn của khách
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

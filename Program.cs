@@ -281,6 +281,40 @@ app.MapPost("/api/care/{id:long}/convert", async (long id, ConvertDto dto, IBook
 
 app.MapGet("/api/care-stats", async (IBookingService svc) => Results.Ok(await svc.CareStatsAsync())).RequireAuthorization();
 
+// ---- Chăm sóc KH sau dịch vụ 72h (Ser_CustomerCare72h): khảo sát hài lòng sau khi giao xe ----
+app.MapPost("/api/post-care", async (CreatePostCareDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusCareId) || string.IsNullOrWhiteSpace(dto.CustomerName))
+        return Results.BadRequest(new { error = "Cần CusCareId và CustomerName." });
+    try { return Results.Ok(await svc.CreatePostCareAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/post-care", async (IBookingService svc, string? status, string? dealer, string? dueBefore) =>
+    Results.Ok(await svc.ListPostCaresAsync(status, dealer, dueBefore))).RequireAuthorization();
+
+app.MapGet("/api/post-care/{cusCareId}", async (string cusCareId, IBookingService svc) =>
+{
+    var r = await svc.GetPostCareAsync(cusCareId);
+    return r is null ? Results.NotFound(new { cusCareId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ghi nhận liên hệ + trả lời khảo sát (PEND → CINFB/CIFB).
+app.MapPost("/api/post-care/{cusCareId}/contact", async (string cusCareId, PostCareContactDto dto, IBookingService svc) =>
+{
+    var r = await svc.ContactPostCareAsync(cusCareId, dto);
+    return r is null ? Results.NotFound(new { cusCareId, error = "Không thấy phiếu chăm sóc hoặc đã bỏ qua." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Bỏ qua không cần liên hệ (REJ).
+app.MapPost("/api/post-care/{cusCareId}/reject", async (string cusCareId, IBookingService svc, string? note) =>
+{
+    var r = await svc.RejectPostCareAsync(cusCareId, note);
+    return r is null ? Results.NotFound(new { cusCareId, error = "Không thấy phiếu chăm sóc." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapGet("/api/post-care-stats", async (IBookingService svc) => Results.Ok(await svc.PostCareStatsAsync())).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
