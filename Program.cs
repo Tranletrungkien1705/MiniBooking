@@ -315,6 +315,40 @@ app.MapPost("/api/post-care/{cusCareId}/reject", async (string cusCareId, IBooki
 
 app.MapGet("/api/post-care-stats", async (IBookingService svc) => Results.Ok(await svc.PostCareStatsAsync())).RequireAuthorization();
 
+// ---- Phiếu tiếp nhận xe (Ser_ReceptionF): lập khi khách đến xưởng → giao xe (P → A) ----
+app.MapPost("/api/reception-forms", async (CreateReceptionFormDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "Cần CustomerName." });
+    return Results.Ok(await svc.CreateReceptionFormAsync(dto));
+}).RequireAuthorization();
+
+app.MapGet("/api/reception-forms", async (IBookingService svc, string? status, string? dealer, string? date) =>
+    Results.Ok(await svc.ListReceptionFormsAsync(status, dealer, date))).RequireAuthorization();
+
+app.MapGet("/api/reception-forms/{receptionFNo}", async (string receptionFNo, IBookingService svc) =>
+{
+    var r = await svc.GetReceptionFormAsync(receptionFNo);
+    return r is null ? Results.NotFound(new { receptionFNo, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Giao xe: P (Tiếp nhận) → A (Giao xe).
+app.MapPost("/api/reception-forms/{receptionFNo}/deliver", async (string receptionFNo, DeliverReceptionFormDto dto, IBookingService svc) =>
+{
+    var r = await svc.DeliverReceptionFormAsync(receptionFNo, dto);
+    return r is null ? Results.NotFound(new { receptionFNo, error = "Không thấy phiếu hoặc đã giao xe." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_ReceptionF_DeleteX_ExistRONotDelete: chặn xóa khi phiếu đã phát sinh RO.
+app.MapDelete("/api/reception-forms/{receptionFNo}", async (string receptionFNo, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.DeleteReceptionFormAsync(receptionFNo);
+        return r is null ? Results.NotFound(new { receptionFNo, error = "Không thấy phiếu tiếp nhận." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { receptionFNo, error = ex.Message }); }
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

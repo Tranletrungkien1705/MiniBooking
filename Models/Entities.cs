@@ -201,6 +201,28 @@ public sealed class PostServiceCare
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phiếu tiếp nhận xe (chuyển đổi Ser_ReceptionF): lập khi khách đến xưởng, ghi nhận tình trạng xe lúc giao.
+/// Vòng đời: P (Tiếp nhận) → A (Giao xe). Chỉ xóa được khi chưa phát sinh lệnh sửa chữa (Ser_RO.ReceptionFNo).</summary>
+public sealed class ReceptionForm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";   // ReceptionFNo (mã phiếu tiếp nhận)
+    public string DealerCode { get; set; } = "";
+    public string CusName { get; set; } = "";        // CusName
+    public string? Phone { get; set; }                // Tel/Mobile
+    public string? Plate { get; set; }                // PlateNo
+    public string? FrameNo { get; set; }              // FrameNo
+    public string ReceptionType { get; set; } = "Service"; // ReceptionType: Service/Repair/Warranty...
+    public string Status { get; set; } = "P";        // ReceptionFStatus: P=Tiếp nhận, A=Giao xe
+    public string? CreatedBy { get; set; }            // CreatedBy (người lập phiếu)
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;  // CreatedDateTime
+    public DateTime? DeliveryDateTime { get; set; }   // DeliveryDateTime (thời điểm giao xe)
+    public string? AppCode { get; set; }              // lịch hẹn nguồn (Ser_App.Code) nếu tiếp nhận từ lịch hẹn
+    public string? RoNo { get; set; }                 // số RO phát sinh (Ser_RO.RONo) — chặn xóa khi đã có
+    public string? Note { get; set; }
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

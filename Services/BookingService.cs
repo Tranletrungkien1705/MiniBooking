@@ -21,6 +21,8 @@ public record AddRepairOrderDto(string RoId, string? RoNo, string? DealerCode, s
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
+public record CreateReceptionFormDto(string? ReceptionFNo, string? DealerCode, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? ReceptionType, string? AppCode, string? Note);
+public record DeliverReceptionFormDto(string? RoNo, string? Note);
 
 public interface IBookingService
 {
@@ -65,6 +67,11 @@ public interface IBookingService
     Task<object?> ContactPostCareAsync(string cusCareId, PostCareContactDto dto);  // ghi nhận liên hệ + trả lời khảo sát (CINFB/CIFB)
     Task<object?> RejectPostCareAsync(string cusCareId, string? note);       // bỏ qua không liên hệ (REJ)
     Task<object> PostCareStatsAsync();                                       // thống kê phiếu chăm sóc 72h
+    Task<object> CreateReceptionFormAsync(CreateReceptionFormDto dto);       // lập phiếu tiếp nhận xe (Ser_ReceptionF)
+    Task<object> ListReceptionFormsAsync(string? status, string? dealer, string? date);  // danh sách phiếu tiếp nhận
+    Task<object?> GetReceptionFormAsync(string receptionFNo);                // chi tiết 1 phiếu tiếp nhận
+    Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto);  // giao xe (P → A)
+    Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -784,5 +791,96 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             rejected = await q.CountAsync(x => x.Status == "REJ"),
             overdue = await q.CountAsync(x => x.Status == "PEND" && x.FinishedDate != null && x.FinishedDate.Value.Date < today)
         };
+    }
+
+    // ===== Phiếu tiếp nhận xe (Ser_ReceptionF) =====
+    // Lập phiếu khi khách đến xưởng; dedupe theo ReceptionFNo (tự sinh nếu bỏ trống).
+    public async Task<object> CreateReceptionFormAsync(CreateReceptionFormDto dto)
+    {
+        var no = string.IsNullOrWhiteSpace(dto.ReceptionFNo)
+            ? "RF" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99)
+            : dto.ReceptionFNo!.Trim().ToUpperInvariant();
+        var rf = await db.ReceptionForms.FirstOrDefaultAsync(x => x.OrgId == Org && x.ReceptionFNo == no);
+        if (rf is null)
+        {
+            rf = new ReceptionForm
+            {
+                OrgId = Org, ReceptionFNo = no,
+                DealerCode = dto.DealerCode?.Trim() ?? "",
+                CusName = dto.CustomerName?.Trim() ?? "",
+                Phone = dto.Phone?.Trim(), Plate = dto.Plate?.Trim(), FrameNo = dto.FrameNo?.Trim(),
+                ReceptionType = string.IsNullOrWhiteSpace(dto.ReceptionType) ? "Service" : dto.ReceptionType!.Trim(),
+                Status = "P", CreatedDateTime = DateTime.Now,
+                AppCode = dto.AppCode?.Trim().ToUpperInvariant(), Note = dto.Note
+            };
+            db.ReceptionForms.Add(rf);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(dto.CustomerName)) rf.CusName = dto.CustomerName!.Trim();
+            if (dto.Phone != null) rf.Phone = dto.Phone.Trim();
+            if (dto.Plate != null) rf.Plate = dto.Plate.Trim();
+            if (dto.FrameNo != null) rf.FrameNo = dto.FrameNo.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.ReceptionType)) rf.ReceptionType = dto.ReceptionType!.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.DealerCode)) rf.DealerCode = dto.DealerCode!.Trim();
+            if (dto.AppCode != null) rf.AppCode = dto.AppCode.Trim().ToUpperInvariant();
+            if (dto.Note != null) rf.Note = dto.Note;
+        }
+        await db.SaveChangesAsync();
+        return new { rf.ReceptionFNo, rf.CusName, rf.Plate, rf.ReceptionType, rf.Status, rf.AppCode, rf.CreatedDateTime };
+    }
+
+    // Danh sách phiếu tiếp nhận; lọc theo trạng thái (P/A), xưởng, ngày lập.
+    public async Task<object> ListReceptionFormsAsync(string? status, string? dealer, string? date)
+    {
+        var q = db.ReceptionForms.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status.Trim().ToUpperInvariant());
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var d)) q = q.Where(x => x.CreatedDateTime.Date == d.Date);
+        var items = await q.OrderByDescending(x => x.CreatedDateTime).Take(500).Select(x => new
+        {
+            x.ReceptionFNo, x.DealerCode, x.CusName, x.Phone, x.Plate, x.FrameNo, x.ReceptionType,
+            x.Status, statusText = x.Status == "A" ? "Giao xe" : "Tiếp nhận",
+            x.CreatedBy, x.CreatedDateTime, x.DeliveryDateTime, x.AppCode, x.RoNo, x.Note
+        }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    public async Task<object?> GetReceptionFormAsync(string receptionFNo)
+    {
+        receptionFNo = receptionFNo.Trim().ToUpperInvariant();
+        var rf = await db.ReceptionForms.FirstOrDefaultAsync(x => x.OrgId == Org && x.ReceptionFNo == receptionFNo);
+        if (rf is null) return null;
+        return new { rf.ReceptionFNo, rf.DealerCode, rf.CusName, rf.Phone, rf.Plate, rf.FrameNo, rf.ReceptionType, rf.Status, rf.CreatedBy, rf.CreatedDateTime, rf.DeliveryDateTime, rf.AppCode, rf.RoNo, rf.Note };
+    }
+
+    // Giao xe: P (Tiếp nhận) → A (Giao xe), ghi thời điểm giao + số RO (nếu có).
+    public async Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto)
+    {
+        receptionFNo = receptionFNo.Trim().ToUpperInvariant();
+        var rf = await db.ReceptionForms.FirstOrDefaultAsync(x => x.OrgId == Org && x.ReceptionFNo == receptionFNo);
+        if (rf is null || rf.Status == "A") return null;
+        rf.Status = "A";
+        rf.DeliveryDateTime = DateTime.Now;
+        if (!string.IsNullOrWhiteSpace(dto.RoNo)) rf.RoNo = dto.RoNo!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.Note)) rf.Note = dto.Note;
+        await db.SaveChangesAsync();
+        return new { rf.ReceptionFNo, rf.Status, rf.DeliveryDateTime, rf.RoNo };
+    }
+
+    // Ser_ReceptionF_DeleteX_ExistRONotDelete: chỉ xóa được khi phiếu chưa phát sinh lệnh sửa chữa (RO).
+    public async Task<object?> DeleteReceptionFormAsync(string receptionFNo)
+    {
+        receptionFNo = receptionFNo.Trim().ToUpperInvariant();
+        var rf = await db.ReceptionForms.FirstOrDefaultAsync(x => x.OrgId == Org && x.ReceptionFNo == receptionFNo);
+        if (rf is null) return null;
+        // Đã gắn RO (qua RoNo trên phiếu hoặc RO tham chiếu AppCode) → không cho xóa.
+        var hasRo = !string.IsNullOrWhiteSpace(rf.RoNo)
+            || (rf.AppCode != null && await db.RepairOrders.AnyAsync(x => x.OrgId == Org && x.AppCode == rf.AppCode));
+        if (hasRo)
+            throw new InvalidOperationException($"Phiếu tiếp nhận '{receptionFNo}' đã phát sinh lệnh sửa chữa, không thể xóa.");
+        db.ReceptionForms.Remove(rf);
+        await db.SaveChangesAsync();
+        return new { rf.ReceptionFNo, deleted = true };
     }
 }
