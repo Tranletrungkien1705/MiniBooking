@@ -102,6 +102,17 @@ app.MapGet("/api/appointments/search", async (IBookingService svc, string? deale
         dealerCodes, statuses, platePattern, customerName, creator, appTypeCodes, dateFrom, dateTimeline, recordStart, recordCount)))
 ).RequireAuthorization();
 
+// Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
+app.MapPut("/api/appointments/{code}", async (string code, UpdateAppointmentDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateAppointmentAsync(code, dto);
+        return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn hoặc lịch đã hoàn tất/đã hủy." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
+}).RequireAuthorization();
+
 // Gọi xác nhận lịch trước giờ hẹn (Ser_CustomerCare72h): Requested → Contacted (AppStatus=5).
 app.MapPost("/api/appointments/{code}/contact", async (string code, ContactApptDto dto, IBookingService svc) =>
 {

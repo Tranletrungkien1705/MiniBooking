@@ -25,6 +25,10 @@ public record CreateReceptionFormDto(string? ReceptionFNo, string? DealerCode, s
 public record DeliverReceptionFormDto(string? RoNo, string? Note);
 // Ser_App_GetStatusList01DL: bộ lọc nâng cao danh sách lịch hẹn (đa giá trị '|', mẫu biển số, khoảng thời gian, timeline).
 public record SearchAppointmentsDto(string? DealerCodes, string? Statuses, string? PlatePattern, string? CustomerName, string? Creator, string? AppTypeCodes, string? DateFrom, string? DateTimeline, int? RecordStart, int? RecordCount);
+// Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
+public record UpdateAppointmentDto(string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType,
+    DateTime? PreferredAt, string? DealerCode, string? Note, string? BayCode, string? AppTypeCode, DateTime? SlotTo,
+    string? Engineer, List<AddServiceItemDto>? ServiceItems, List<AddPartItemDto>? PartItems);
 
 public interface IBookingService
 {
@@ -75,6 +79,7 @@ public interface IBookingService
     Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto);  // giao xe (P → A)
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
     Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
+    Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto);  // sửa lịch hẹn (Ser_App_UpdateDL)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -969,4 +974,113 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         "5" => ApptStatus.Contacted,
         _ => null
     };
+
+    // ===== Sửa lịch hẹn (Ser_App_UpdateDL / Ser_App_UpdateX) =====
+    // Cập nhật thông tin lịch hẹn đã có: khách/xe/dịch vụ/thời gian/khoang/loại/ghi chú.
+    // Nếu truyền ServiceItems/PartItems thì THAY toàn bộ danh sách cũ (giống Ser_App_UpdateX: delete olds → insert).
+    // Áp lại các ràng buộc như khi tạo: thời gian chưa qua, giờ kết thúc > giờ bắt đầu, khoang tồn tại + phù hợp
+    // loại dịch vụ + không trùng khung giờ (MyCheck_DateTime_Cavity), loại cuộc hẹn phải có trong master.
+    public async Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        // Không sửa lịch đã hoàn tất/đã hủy/không đến.
+        if (a.Status is ApptStatus.Done or ApptStatus.Cancelled or ApptStatus.NoShow) return null;
+
+        var serviceType = string.IsNullOrWhiteSpace(dto.ServiceType) ? a.ServiceType : dto.ServiceType!.Trim();
+        var preferredAt = dto.PreferredAt ?? a.PreferredAt;
+
+        // SerAppCreateDL_InvaliddtDateTimeFrom: không cho dời lịch về thời điểm đã qua.
+        if (preferredAt < DateTime.Now)
+            throw new InvalidOperationException($"Thời gian hẹn {preferredAt:yyyy-MM-dd HH:mm} đã qua, vui lòng chọn thời gian khác.");
+        // SerAppCreateDL_InvaliddtDateTimeTo: giờ kết thúc (nếu có) phải sau giờ bắt đầu.
+        var slotTo = dto.SlotTo ?? a.SlotTo;
+        if (slotTo.HasValue && slotTo.Value <= preferredAt)
+            throw new InvalidOperationException($"Giờ kết thúc {slotTo:HH:mm} phải sau giờ bắt đầu {preferredAt:HH:mm}.");
+
+        // SerAppCreateDL_AppTypeCodeNotEmpty: loại cuộc hẹn phải tồn tại trong master Mst_Ser_AppType.
+        var appTypeCode = dto.AppTypeCode is null ? a.AppTypeCode : dto.AppTypeCode.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(appTypeCode))
+        {
+            var ok = await db.AppTypes.AnyAsync(x => x.OrgId == Org && x.Code == appTypeCode && x.Active);
+            if (!ok) throw new InvalidOperationException($"Loại cuộc hẹn '{appTypeCode}' không tồn tại hoặc đã ngừng dùng.");
+        }
+
+        // Khoang: kiểm tra tồn tại + phù hợp loại dịch vụ + không trùng khung giờ (MyCheck_DateTime_Cavity).
+        var bayCode = dto.BayCode is null ? a.BayCode : dto.BayCode.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(bayCode))
+        {
+            var bay = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == bayCode && x.Active);
+            if (bay is null) throw new InvalidOperationException($"Khoang '{bayCode}' không tồn tại hoặc đã ngừng dùng.");
+            if (!CavityRules.IsCompatible(serviceType, bay.BayType))
+                throw new InvalidOperationException($"Khoang '{bayCode}' (loại {bay.BayType}) không phù hợp với dịch vụ '{serviceType}'.");
+            var from = a.SlotFrom ?? preferredAt;
+            var to = slotTo ?? from.AddHours(1);
+            var conflict = await FindBayConflictAsync(bayCode, from, to, a.Id);
+            if (conflict is not null)
+                throw new InvalidOperationException($"Khoang '{bayCode}' đã có lịch {conflict} trùng khung giờ {from:HH:mm}-{to:HH:mm}.");
+        }
+
+        // Cập nhật các trường thông tin (chỉ ghi đè khi client truyền giá trị).
+        if (!string.IsNullOrWhiteSpace(dto.CustomerName)) a.CustomerName = dto.CustomerName!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.Phone)) a.Phone = dto.Phone!.Trim();
+        if (dto.Vin != null) a.Vin = dto.Vin.Trim().ToUpperInvariant();
+        if (dto.Plate != null) a.Plate = dto.Plate.Trim();
+        a.ServiceType = serviceType;
+        a.PreferredAt = preferredAt;
+        if (!string.IsNullOrWhiteSpace(dto.DealerCode)) a.DealerCode = dto.DealerCode!.Trim();
+        if (dto.Note != null) a.Note = dto.Note;
+        a.BayCode = bayCode;
+        a.AppTypeCode = appTypeCode;
+        if (dto.SlotTo != null) a.SlotTo = dto.SlotTo;
+        if (dto.Engineer != null) a.Engineer = dto.Engineer;
+
+        // Ser_App_UpdateX: thay toàn bộ danh sách dịch vụ kèm lịch (delete olds → insert).
+        if (dto.ServiceItems is not null)
+        {
+            var olds = await db.AppServiceItems.Where(x => x.OrgId == Org && x.AppCode == a.Code).ToListAsync();
+            db.AppServiceItems.RemoveRange(olds);
+            foreach (var it in dto.ServiceItems)
+            {
+                if (string.IsNullOrWhiteSpace(it.SerCode)) continue;
+                var serCode = it.SerCode.Trim().ToUpperInvariant();
+                db.AppServiceItems.Add(new AppServiceItem
+                {
+                    OrgId = Org, AppCode = a.Code, SerCode = serCode,
+                    SerName = string.IsNullOrWhiteSpace(it.SerName) ? serCode : it.SerName!.Trim(),
+                    StdManHour = it.StdManHour is > 0 ? it.StdManHour!.Value : 0m,
+                    Note = it.Note
+                });
+            }
+        }
+
+        // Ser_App_UpdateX: thay toàn bộ danh sách phụ tùng kèm lịch (delete olds → insert).
+        if (dto.PartItems is not null)
+        {
+            var olds = await db.AppPartItems.Where(x => x.OrgId == Org && x.AppCode == a.Code).ToListAsync();
+            db.AppPartItems.RemoveRange(olds);
+            foreach (var it in dto.PartItems)
+            {
+                if (string.IsNullOrWhiteSpace(it.PartCode)) continue;
+                var partCode = it.PartCode.Trim().ToUpperInvariant();
+                db.AppPartItems.Add(new AppPartItem
+                {
+                    OrgId = Org, AppCode = a.Code, PartCode = partCode,
+                    PartName = string.IsNullOrWhiteSpace(it.PartName) ? partCode : it.PartName!.Trim(),
+                    Unit = it.Unit?.Trim() ?? "",
+                    Quantity = it.Quantity is > 0 ? it.Quantity!.Value : 0m,
+                    InventoryQuantity = it.InventoryQuantity is > 0 ? it.InventoryQuantity!.Value : 0m,
+                    Note = it.Note
+                });
+            }
+        }
+
+        await db.SaveChangesAsync();
+        return new
+        {
+            a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
+            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
+            a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo, a.Note
+        };
+    }
 }
