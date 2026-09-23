@@ -196,6 +196,40 @@ app.MapPost("/api/cavity-types", async (AddCavityTypeDto dto, IBookingService sv
 app.MapGet("/api/cavity-types", async (IBookingService svc, bool? active) =>
     Results.Ok(await svc.ListCavityTypesAsync(active))).RequireAuthorization();
 
+// ---- Lịch làm việc của xưởng (Mst_Calendar): ngày làm việc/nghỉ theo năm ----
+// Mst_Calendar_ResetYear: khởi tạo lịch cả năm theo StatusValue từng thứ (0 = làm việc).
+app.MapPost("/api/calendar-days/reset-year", async (ResetCalendarYearDto dto, IBookingService svc) =>
+{
+    try { return Results.Ok(await svc.ResetCalendarYearAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+// Mst_Calendar_Get: danh sách ngày theo loại lịch + năm (hoặc khoảng from..to).
+app.MapGet("/api/calendar-days", async (IBookingService svc, string? calendarType, int? year, string? from, string? to) =>
+    Results.Ok(await svc.ListCalendarDaysAsync(calendarType, year, from, to))).RequireAuthorization();
+
+// Mst_Calendar_UpdateStatusValue: đổi trạng thái làm việc/nghỉ của 1 ngày.
+app.MapPut("/api/calendar-days", async (UpdateCalendarDayDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateCalendarDayAsync(dto);
+        return r is null ? Results.NotFound(new { dto.Date, error = "Không thấy ngày trong lịch." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+// Mst_Calendar_GetDateToCheck: ngày làm việc thứ N kể từ mốc 'from'.
+app.MapGet("/api/calendar-days/next-working", async (IBookingService svc, string from, int? dayOffset) =>
+{
+    try
+    {
+        var r = await svc.NextWorkingDayAsync(from, dayOffset ?? 0);
+        return r is null ? Results.NotFound(new { from, dayOffset = dayOffset ?? 0, error = "Không đủ ngày làm việc trong lịch đã khởi tạo." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+}).RequireAuthorization();
+
 // ---- Dịch vụ đăng ký kèm lịch hẹn (Ser_AppServiceItems): công việc + giờ công chuẩn ----
 app.MapPost("/api/appointments/{code}/services", async (string code, AddServiceItemDto dto, IBookingService svc) =>
 {

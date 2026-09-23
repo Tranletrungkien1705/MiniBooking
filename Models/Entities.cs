@@ -80,6 +80,32 @@ public sealed class CavityType
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lịch làm việc của xưởng (chuyển đổi Mst_Calendar): mỗi ngày trong năm có 1 StatusValue
+/// cho biết ngày đó có làm việc hay không, theo từng loại lịch (CalendarType).
+/// StatusValue = 0 → ngày làm việc; khác 0 → ngày nghỉ/lễ. Dùng để chặn đặt lịch vào ngày nghỉ.</summary>
+public sealed class CalendarDay
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CalendarType { get; set; } = CalendarTypes.WorkingDay;  // CalendarType (WORKINGDAY)
+    public DateTime Date { get; set; }                                    // Date (1 ngày)
+    public int StatusValue { get; set; }                                  // 0 = làm việc, khác 0 = nghỉ
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;           // LogLUDateTime
+    public string? LogLUBy { get; set; }                                  // LogLUBy
+}
+
+/// <summary>Loại lịch làm việc (chuyển đổi TConst.CalendarType): hiện chỉ có WORKINGDAY.</summary>
+public static class CalendarTypes
+{
+    public const string WorkingDay = "WORKINGDAY";
+
+    /// <summary>StatusValue = 0 nghĩa là ngày làm việc (theo Mst_Calendar_GetForDayT).</summary>
+    public const int Working = 0;
+
+    /// <summary>True nếu StatusValue biểu thị ngày làm việc.</summary>
+    public static bool IsWorking(int statusValue) => statusValue == Working;
+}
+
 /// <summary>Ràng buộc khoang theo loại dịch vụ (Ser_Cavity.CavityType ↔ Ser_App.ServiceType):
 /// mỗi loại dịch vụ chỉ được xếp vào các loại khoang tương thích.</summary>
 public static class CavityRules

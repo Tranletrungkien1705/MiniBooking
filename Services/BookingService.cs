@@ -15,6 +15,10 @@ public record AddEngineerDto(string Code, string Name, string? Skill, string? De
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
 public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
+// Mst_Calendar_ResetYear: khởi tạo lịch làm việc cả năm theo StatusValue từng thứ (0 = làm việc).
+public record ResetCalendarYearDto(string? CalendarType, int Year, int? Monday, int? Tuesday, int? Wednesday, int? Thursday, int? Friday, int? Saturday, int? Sunday);
+// Mst_Calendar_UpdateStatusValue: đổi trạng thái làm việc/nghỉ của 1 ngày cụ thể.
+public record UpdateCalendarDayDto(string? CalendarType, string Date, int StatusValue);
 public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
 public record AddPartItemDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? InventoryQuantity, string? Note);
 public record AddRepairOrderDto(string RoId, string? RoNo, string? DealerCode, string? CusName, string? CusTel, string? PlateNo, string? FrameNo, string? CusRequest, string? Status);
@@ -78,6 +82,10 @@ public interface IBookingService
     Task<object> ListAppTypesAsync(bool? active);
     Task<object> AddCavityTypeAsync(AddCavityTypeDto dto);
     Task<object> ListCavityTypesAsync(bool? active);
+    Task<object> ResetCalendarYearAsync(ResetCalendarYearDto dto);            // khởi tạo lịch làm việc cả năm (Mst_Calendar_ResetYear)
+    Task<object> ListCalendarDaysAsync(string? calendarType, int? year, string? from, string? to);  // danh sách ngày (Mst_Calendar_Get)
+    Task<object?> UpdateCalendarDayAsync(UpdateCalendarDayDto dto);           // đổi trạng thái 1 ngày (Mst_Calendar_UpdateStatusValue)
+    Task<object?> NextWorkingDayAsync(string from, int dayOffset);            // ngày làm việc thứ N kể từ mốc (Mst_Calendar_GetDateToCheck)
     Task<object?> AddServiceItemAsync(string code, AddServiceItemDto dto);   // gán dịch vụ kèm lịch hẹn (Ser_AppServiceItems)
     Task<object?> ListServiceItemsAsync(string code);                        // danh sách dịch vụ của lịch hẹn
     Task<object?> RemoveServiceItemAsync(string code, long itemId);          // bỏ 1 dịch vụ khỏi lịch hẹn
@@ -542,6 +550,98 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         if (active.HasValue) q = q.Where(x => x.Active == active.Value);
         var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
         return new { count = items.Count, items };
+    }
+
+    // ===== Lịch làm việc của xưởng (Mst_Calendar) =====
+    // Mst_Calendar_ResetYear: xóa toàn bộ ngày của năm rồi sinh lại 1 dòng/ngày với StatusValue theo thứ.
+    // StatusValue = 0 → ngày làm việc; khác 0 → ngày nghỉ/lễ. Year hợp lệ 1900..2100.
+    public async Task<object> ResetCalendarYearAsync(ResetCalendarYearDto dto)
+    {
+        var calendarType = string.IsNullOrWhiteSpace(dto.CalendarType) ? CalendarTypes.WorkingDay : dto.CalendarType!.Trim().ToUpperInvariant();
+        if (dto.Year < 1900 || dto.Year > 2100)
+            throw new InvalidOperationException($"Năm {dto.Year} không hợp lệ (1900..2100).");
+
+        var first = new DateTime(dto.Year, 1, 1);
+        var next = new DateTime(dto.Year + 1, 1, 1);
+
+        // Xóa dữ liệu cũ của năm (Clear Old Data).
+        var olds = await db.CalendarDays.Where(x => x.OrgId == Org && x.CalendarType == calendarType
+            && x.Date >= first && x.Date < next).ToListAsync();
+        db.CalendarDays.RemoveRange(olds);
+
+        // StatusValue theo từng thứ (mặc định 0 = làm việc nếu không truyền).
+        var byDow = new Dictionary<DayOfWeek, int>
+        {
+            [DayOfWeek.Monday] = dto.Monday ?? CalendarTypes.Working,
+            [DayOfWeek.Tuesday] = dto.Tuesday ?? CalendarTypes.Working,
+            [DayOfWeek.Wednesday] = dto.Wednesday ?? CalendarTypes.Working,
+            [DayOfWeek.Thursday] = dto.Thursday ?? CalendarTypes.Working,
+            [DayOfWeek.Friday] = dto.Friday ?? CalendarTypes.Working,
+            [DayOfWeek.Saturday] = dto.Saturday ?? CalendarTypes.Working,
+            [DayOfWeek.Sunday] = dto.Sunday ?? CalendarTypes.Working,
+        };
+        var now = DateTime.Now;
+        int created = 0;
+        for (var d = first; d < next; d = d.AddDays(1))
+        {
+            db.CalendarDays.Add(new CalendarDay
+            {
+                OrgId = Org, CalendarType = calendarType, Date = d.Date,
+                StatusValue = byDow[d.DayOfWeek], LogLUDateTime = now
+            });
+            created++;
+        }
+        await db.SaveChangesAsync();
+        return new { calendarType, year = dto.Year, removed = olds.Count, created };
+    }
+
+    // Mst_Calendar_Get: danh sách ngày theo loại lịch + năm (hoặc khoảng from..to).
+    public async Task<object> ListCalendarDaysAsync(string? calendarType, int? year, string? from, string? to)
+    {
+        var type = string.IsNullOrWhiteSpace(calendarType) ? CalendarTypes.WorkingDay : calendarType!.Trim().ToUpperInvariant();
+        var q = db.CalendarDays.Where(x => x.OrgId == Org && x.CalendarType == type);
+        if (year.HasValue)
+        {
+            var first = new DateTime(year.Value, 1, 1);
+            var next = new DateTime(year.Value + 1, 1, 1);
+            q = q.Where(x => x.Date >= first && x.Date < next);
+        }
+        if (!string.IsNullOrWhiteSpace(from) && DateTime.TryParse(from, out var f)) q = q.Where(x => x.Date >= f.Date);
+        if (!string.IsNullOrWhiteSpace(to) && DateTime.TryParse(to, out var t)) q = q.Where(x => x.Date <= t.Date);
+        var items = await q.OrderBy(x => x.Date).Take(1000)
+            .Select(x => new { x.Date, x.StatusValue, isWorking = x.StatusValue == CalendarTypes.Working, x.LogLUDateTime, x.LogLUBy })
+            .ToListAsync();
+        return new { calendarType = type, count = items.Count, workingDays = items.Count(x => x.isWorking), items };
+    }
+
+    // Mst_Calendar_UpdateStatusValue: đổi trạng thái 1 ngày; ngày phải tồn tại (Mst_Calendar_CheckDB).
+    public async Task<object?> UpdateCalendarDayAsync(UpdateCalendarDayDto dto)
+    {
+        var type = string.IsNullOrWhiteSpace(dto.CalendarType) ? CalendarTypes.WorkingDay : dto.CalendarType!.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(dto.Date) || !DateTime.TryParse(dto.Date, out var date))
+            throw new InvalidOperationException("Cần Date hợp lệ (yyyy-MM-dd).");
+        var day = await db.CalendarDays.FirstOrDefaultAsync(x => x.OrgId == Org && x.CalendarType == type && x.Date == date.Date);
+        if (day is null)
+            throw new InvalidOperationException($"Ngày {date:yyyy-MM-dd} chưa có trong lịch '{type}' (cần khởi tạo năm trước).");
+        day.StatusValue = dto.StatusValue;
+        day.LogLUDateTime = DateTime.Now;
+        await db.SaveChangesAsync();
+        return new { day.CalendarType, day.Date, day.StatusValue, isWorking = CalendarTypes.IsWorking(day.StatusValue), day.LogLUDateTime };
+    }
+
+    // Mst_Calendar_GetDateToCheck: ngày làm việc thứ N (dayOffset) kể từ mốc 'from' (chỉ đếm ngày StatusValue=0).
+    public async Task<object?> NextWorkingDayAsync(string from, int dayOffset)
+    {
+        if (string.IsNullOrWhiteSpace(from) || !DateTime.TryParse(from, out var start))
+            throw new InvalidOperationException("Cần 'from' hợp lệ (yyyy-MM-dd).");
+        if (dayOffset < 0) dayOffset = 0;
+        var working = await db.CalendarDays
+            .Where(x => x.OrgId == Org && x.CalendarType == CalendarTypes.WorkingDay
+                && x.StatusValue == CalendarTypes.Working && x.Date >= start.Date)
+            .OrderBy(x => x.Date).Take(dayOffset + 1).ToListAsync();
+        if (working.Count <= dayOffset) return null;   // không đủ ngày làm việc trong lịch đã khởi tạo
+        var target = working[dayOffset];
+        return new { from = start.Date, dayOffset, date = target.Date, isWorking = true };
     }
 
     // ===== Dịch vụ đăng ký kèm lịch hẹn (Ser_AppServiceItems) =====
