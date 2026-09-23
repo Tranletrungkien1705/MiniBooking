@@ -91,6 +91,14 @@ app.MapGet("/api/book/{code}", async (string code, IBookingService svc) =>
     return r is null ? Results.NotFound(new { code, found = false }) : Results.Ok(r);
 });
 
+// Ser_App_GetDL / SerAppController.GetByAppIdDL: chi tiết 1 lịch hẹn — header (khách/xe/khoang/KTV/RO)
+// + danh sách dịch vụ (Ser_AppServiceItems) + phụ tùng (Ser_AppPartItems) trong 1 lần gọi.
+app.MapGet("/api/appointments/{code}/detail", async (string code, IBookingService svc) =>
+{
+    var r = await svc.GetAppointmentDetailAsync(code);
+    return r is null ? Results.NotFound(new { code, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Nội bộ (SSO): quản lý lịch hẹn ----
 app.MapGet("/api/appointments", async (IBookingService svc, string? status, string? dealer, string? date) =>
     Results.Ok(await svc.ListAsync(status, dealer, date))).RequireAuthorization();

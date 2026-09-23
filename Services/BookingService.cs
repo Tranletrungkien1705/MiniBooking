@@ -91,6 +91,7 @@ public interface IBookingService
 {
     Task<object> BookAsync(BookDto dto);        // công khai (khách)
     Task<object?> StatusAsync(string code);     // công khai
+    Task<object?> GetAppointmentDetailAsync(string code);  // chi tiết lịch hẹn (Ser_App_GetDL/GetByAppIdDL)
     Task<object> ListAsync(string? status, string? dealer, string? date);
     Task<object?> ContactAsync(string code, ContactApptDto dto);   // gọi xác nhận trước giờ hẹn (AppStatus=5)
     Task<object> DueForContactAsync(int withinHours);              // danh sách lịch cần gọi xác nhận
@@ -261,6 +262,51 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         var a = await db.Appointments.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Code == code);
         if (a is null) return null;
         return new { a.Code, a.CustomerName, a.ServiceType, a.PreferredAt, status = a.Status.ToString(), statusText = Text(a.Status), a.Engineer, a.RoNo, a.BayCode, a.AppTypeCode, a.ContactedAt, a.ContactResult };
+    }
+
+    // Ser_App_GetDL / SerAppController.GetByAppIdDL: chi tiết 1 lịch hẹn — header (khách/xe/khoang/KTV/RO)
+    // + danh sách dịch vụ (Ser_AppServiceItems) + danh sách phụ tùng (Ser_AppPartItems) trong 1 lần gọi.
+    public async Task<object?> GetAppointmentDetailAsync(string code)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+
+        var services = await db.AppServiceItems.Where(x => x.OrgId == Org && x.AppCode == a.Code)
+            .OrderBy(x => x.SerCode)
+            .Select(x => new { x.Id, x.SerCode, x.SerName, x.StdManHour, x.Note }).ToListAsync();
+
+        var parts = await db.AppPartItems.Where(x => x.OrgId == Org && x.AppCode == a.Code)
+            .OrderBy(x => x.PartCode)
+            .Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.Quantity, x.InventoryQuantity, x.Note }).ToListAsync();
+        var partRows = parts.Select(x => new
+        {
+            x.Id, x.PartCode, x.PartName, x.Unit, x.Quantity, x.InventoryQuantity, x.Note,
+            shortage = x.Quantity > x.InventoryQuantity
+        });
+
+        // Khoang + KTV + RO gắn kèm (Ser_Cavity.CavityName / Ser_Engineer.EngineerName / Ser_RO.RONo).
+        var bay = string.IsNullOrWhiteSpace(a.BayCode) ? null
+            : await db.ServiceBays.Where(b => b.OrgId == Org && b.Code == a.BayCode)
+                .Select(b => new { b.Code, b.Name, b.BayType }).FirstOrDefaultAsync();
+        var engineer = string.IsNullOrWhiteSpace(a.Engineer) ? null
+            : await db.Engineers.Where(e => e.OrgId == Org && e.Code == a.Engineer)
+                .Select(e => new { e.Code, e.Name, e.Skill }).FirstOrDefaultAsync();
+        var ro = string.IsNullOrWhiteSpace(a.RoId) ? null
+            : await db.RepairOrders.Where(r => r.OrgId == Org && r.RoId == a.RoId)
+                .Select(r => new { r.RoId, r.RoNo, r.Status }).FirstOrDefaultAsync();
+
+        return new
+        {
+            a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType,
+            a.PreferredAt, a.SlotFrom, a.SlotTo, a.DealerCode,
+            status = a.Status.ToString(), statusText = Text(a.Status),
+            a.AppTypeCode, a.BayCode, a.Engineer, a.RoNo, a.RoId, a.Note,
+            a.CreatedAt, a.ContactedAt, a.ContactResult, a.ContactNote, a.CheckedInAt, a.DoneAt,
+            bay, engineer, ro,
+            serviceItems = services, partItems = partRows,
+            totalManHour = services.Sum(x => x.StdManHour),
+            totalPartQuantity = parts.Sum(x => x.Quantity)
+        };
     }
 
     public async Task<object> ListAsync(string? status, string? dealer, string? date)
