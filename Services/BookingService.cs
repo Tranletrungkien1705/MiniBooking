@@ -34,6 +34,9 @@ public record UpdatePlannedDeliveryDateDto(string PlanedDeliveryDate, string? Re
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
+// Ser_CustomerCare24h: phiếu chăm sóc sau dịch vụ 24h (khảo sát sớm, song song phiếu 72h).
+public record CreatePostCare24hDto(string CusCareId, string? RoId, string? OrderId, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate24, string? Note);
+public record PostCare24hContactDto(string? ContactDate24, string? FyourCSSH24, string? WFBasicNeeds24, string? YourCarProblem24, string? YourRIWN24, string? YourSatisfyQSv24, string? YourHopeOfOur24, string? Note);
 public record CreateReceptionFormDto(string? ReceptionFNo, string? DealerCode, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? ReceptionType, string? AppCode, string? Note);
 public record DeliverReceptionFormDto(string? RoNo, string? Note);
 // Ser_App_GetStatusList01DL: bộ lọc nâng cao danh sách lịch hẹn (đa giá trị '|', mẫu biển số, khoảng thời gian, timeline).
@@ -130,6 +133,12 @@ public interface IBookingService
     Task<object?> ContactPostCareAsync(string cusCareId, PostCareContactDto dto);  // ghi nhận liên hệ + trả lời khảo sát (CINFB/CIFB)
     Task<object?> RejectPostCareAsync(string cusCareId, string? note);       // bỏ qua không liên hệ (REJ)
     Task<object> PostCareStatsAsync();                                       // thống kê phiếu chăm sóc 72h
+    Task<object> CreatePostCare24hAsync(CreatePostCare24hDto dto);           // tạo phiếu chăm sóc sau dịch vụ 24h (Ser_CustomerCare24h)
+    Task<object> ListPostCares24hAsync(string? status, string? dealer, string? dueBefore, string? customerName, string? plate, string? frameNo);  // danh sách phiếu chăm sóc 24h
+    Task<object?> GetPostCare24hAsync(string cusCareId);                     // chi tiết 1 phiếu chăm sóc 24h
+    Task<object?> ContactPostCare24hAsync(string cusCareId, PostCare24hContactDto dto);  // ghi nhận liên hệ + trả lời khảo sát (CINFB/CIFB)
+    Task<object?> RejectPostCare24hAsync(string cusCareId, string? note);    // bỏ qua không liên hệ (REJ)
+    Task<object> PostCare24hStatsAsync();                                    // thống kê phiếu chăm sóc 24h
     Task<object> CreateReceptionFormAsync(CreateReceptionFormDto dto);       // lập phiếu tiếp nhận xe (Ser_ReceptionF)
     Task<object> ListReceptionFormsAsync(string? status, string? dealer, string? date);  // danh sách phiếu tiếp nhận
     Task<object?> GetReceptionFormAsync(string receptionFNo);                // chi tiết 1 phiếu tiếp nhận
@@ -1237,6 +1246,117 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             contactedFeedback = await q.CountAsync(x => x.Status == "CIFB"),
             rejected = await q.CountAsync(x => x.Status == "REJ"),
             overdue = await q.CountAsync(x => x.Status == "PEND" && x.FinishedDate != null && x.FinishedDate.Value.Date < today)
+        };
+    }
+
+    // ===== Chăm sóc KH sau dịch vụ 24h (Ser_CustomerCare24h) =====
+    // Tạo phiếu khảo sát hài lòng sớm (24h) sau khi giao xe; dedupe theo CusCareId.
+    public async Task<object> CreatePostCare24hAsync(CreatePostCare24hDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.CusCareId)) throw new InvalidOperationException("Cần CusCareId (mã phiếu chăm sóc 24h).");
+        var cusCareId = dto.CusCareId.Trim().ToUpperInvariant();
+        var c = await db.PostServiceCares24h.FirstOrDefaultAsync(x => x.OrgId == Org && x.CusCareId == cusCareId);
+        if (c is null)
+        {
+            c = new PostServiceCare24h
+            {
+                OrgId = Org, CusCareId = cusCareId,
+                RoId = dto.RoId?.Trim().ToUpperInvariant(), OrderId = dto.OrderId?.Trim(),
+                CustomerName = dto.CustomerName?.Trim() ?? "", Phone = dto.Phone?.Trim(),
+                Plate = dto.Plate?.Trim(), FrameNo = dto.FrameNo?.Trim(),
+                DealerCode = dto.DealerCode?.Trim() ?? "", FinishedDate24 = dto.FinishedDate24,
+                Note = dto.Note, Status = SerCareStatuses.Pending
+            };
+            db.PostServiceCares24h.Add(c);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(dto.CustomerName)) c.CustomerName = dto.CustomerName!.Trim();
+            if (dto.Phone != null) c.Phone = dto.Phone.Trim();
+            if (dto.Plate != null) c.Plate = dto.Plate.Trim();
+            if (dto.FrameNo != null) c.FrameNo = dto.FrameNo.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.DealerCode)) c.DealerCode = dto.DealerCode!.Trim();
+            if (dto.RoId != null) c.RoId = dto.RoId.Trim().ToUpperInvariant();
+            if (dto.OrderId != null) c.OrderId = dto.OrderId.Trim();
+            if (dto.FinishedDate24.HasValue) c.FinishedDate24 = dto.FinishedDate24;
+            if (dto.Note != null) c.Note = dto.Note;
+        }
+        await db.SaveChangesAsync();
+        return new { c.CusCareId, c.RoId, c.OrderId, c.CustomerName, c.Status, c.FinishedDate24 };
+    }
+
+    // Danh sách phiếu chăm sóc 24h; lọc theo trạng thái/đại lý/mốc giao xe + tên KH/biển số/số khung (chứa).
+    public async Task<object> ListPostCares24hAsync(string? status, string? dealer, string? dueBefore, string? customerName, string? plate, string? frameNo)
+    {
+        var q = db.PostServiceCares24h.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status.ToUpperInvariant());
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        if (!string.IsNullOrWhiteSpace(dueBefore) && DateTime.TryParse(dueBefore, out var d)) q = q.Where(x => x.FinishedDate24 != null && x.FinishedDate24.Value.Date <= d.Date);
+        if (!string.IsNullOrWhiteSpace(customerName)) q = q.Where(x => x.CustomerName.Contains(customerName));
+        if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.Plate != null && x.Plate.Contains(plate));
+        if (!string.IsNullOrWhiteSpace(frameNo)) q = q.Where(x => x.FrameNo != null && x.FrameNo.Contains(frameNo));
+        var items = await q.OrderBy(x => x.FinishedDate24).Take(500).Select(x => new
+        {
+            x.CusCareId, x.RoId, x.OrderId, x.CustomerName, x.Phone, x.Plate, x.FrameNo, x.DealerCode,
+            x.FinishedDate24, x.Status, statusText = SerCareStatuses.Text(x.Status), x.ContactDate24, x.YourSatisfyQSv24, x.YourRIWN24, x.Note
+        }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    public async Task<object?> GetPostCare24hAsync(string cusCareId)
+    {
+        cusCareId = cusCareId.Trim().ToUpperInvariant();
+        var c = await db.PostServiceCares24h.FirstOrDefaultAsync(x => x.OrgId == Org && x.CusCareId == cusCareId);
+        if (c is null) return null;
+        return new { c.CusCareId, c.RoId, c.OrderId, c.CustomerName, c.Phone, c.Plate, c.FrameNo, c.DealerCode, c.FinishedDate24, c.Status, statusText = SerCareStatuses.Text(c.Status), c.ContactDate24, c.FyourCSSH24, c.WFBasicNeeds24, c.YourCarProblem24, c.YourRIWN24, c.YourSatisfyQSv24, c.YourHopeOfOur24, c.Note, c.CreatedAt };
+    }
+
+    // Ghi nhận liên hệ + trả lời khảo sát: PEND → CIFB (đã phản hồi) nếu có câu trả lời, ngược lại CINFB (chưa phản hồi).
+    public async Task<object?> ContactPostCare24hAsync(string cusCareId, PostCare24hContactDto dto)
+    {
+        cusCareId = cusCareId.Trim().ToUpperInvariant();
+        var c = await db.PostServiceCares24h.FirstOrDefaultAsync(x => x.OrgId == Org && x.CusCareId == cusCareId);
+        if (c is null || c.Status == SerCareStatuses.Reject) return null;
+        if (!string.IsNullOrWhiteSpace(dto.FyourCSSH24)) c.FyourCSSH24 = dto.FyourCSSH24!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.WFBasicNeeds24)) c.WFBasicNeeds24 = dto.WFBasicNeeds24!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.YourCarProblem24)) c.YourCarProblem24 = dto.YourCarProblem24!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.YourRIWN24)) c.YourRIWN24 = dto.YourRIWN24!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.YourSatisfyQSv24)) c.YourSatisfyQSv24 = dto.YourSatisfyQSv24!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.YourHopeOfOur24)) c.YourHopeOfOur24 = dto.YourHopeOfOur24!.Trim();
+        if (dto.Note != null) c.Note = dto.Note;
+        c.ContactDate24 = string.IsNullOrWhiteSpace(dto.ContactDate24) ? DateTime.Now : (DateTime.TryParse(dto.ContactDate24, out var cd) ? cd : DateTime.Now);
+        var answered = !string.IsNullOrWhiteSpace(c.YourSatisfyQSv24) || !string.IsNullOrWhiteSpace(c.YourCarProblem24)
+            || !string.IsNullOrWhiteSpace(c.YourRIWN24) || !string.IsNullOrWhiteSpace(c.FyourCSSH24)
+            || !string.IsNullOrWhiteSpace(c.WFBasicNeeds24) || !string.IsNullOrWhiteSpace(c.YourHopeOfOur24);
+        c.Status = answered ? SerCareStatuses.ContactedIFNoB : SerCareStatuses.ContactedINeedFB;
+        await db.SaveChangesAsync();
+        return new { c.CusCareId, c.Status, statusText = SerCareStatuses.Text(c.Status), c.ContactDate24, c.YourSatisfyQSv24, c.YourRIWN24 };
+    }
+
+    // Bỏ qua không cần liên hệ (REJ).
+    public async Task<object?> RejectPostCare24hAsync(string cusCareId, string? note)
+    {
+        cusCareId = cusCareId.Trim().ToUpperInvariant();
+        var c = await db.PostServiceCares24h.FirstOrDefaultAsync(x => x.OrgId == Org && x.CusCareId == cusCareId);
+        if (c is null) return null;
+        c.Status = SerCareStatuses.Reject;
+        if (!string.IsNullOrWhiteSpace(note)) c.Note = note;
+        await db.SaveChangesAsync();
+        return new { c.CusCareId, c.Status, statusText = SerCareStatuses.Text(c.Status), c.Note };
+    }
+
+    public async Task<object> PostCare24hStatsAsync()
+    {
+        var q = db.PostServiceCares24h.Where(x => x.OrgId == Org);
+        var today = DateTime.Now.Date;
+        return new
+        {
+            total = await q.CountAsync(),
+            pending = await q.CountAsync(x => x.Status == SerCareStatuses.Pending),
+            contactedNoFeedback = await q.CountAsync(x => x.Status == SerCareStatuses.ContactedINeedFB),
+            contactedFeedback = await q.CountAsync(x => x.Status == SerCareStatuses.ContactedIFNoB),
+            rejected = await q.CountAsync(x => x.Status == SerCareStatuses.Reject),
+            overdue = await q.CountAsync(x => x.Status == SerCareStatuses.Pending && x.FinishedDate24 != null && x.FinishedDate24.Value.Date < today)
         };
     }
 

@@ -397,6 +397,56 @@ public sealed class PostServiceCare
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chăm sóc KH sau dịch vụ 24h (chuyển đổi Ser_CustomerCare24h): khảo sát hài lòng sớm (24 giờ) sau khi giao xe,
+/// song song với phiếu 72h. Vòng đời: PEND (chưa liên hệ) → CINFB (đã liên hệ, chưa phản hồi) / CIFB (đã liên hệ, đã phản hồi) / REJ (bỏ qua).
+/// Gắn với 1 lệnh sửa chữa (ROID) + ngày giao xe (FinishedDate24).</summary>
+public sealed class PostServiceCare24h
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusCareId { get; set; } = "";      // CusCareID (mã phiếu chăm sóc 24h)
+    public string? RoId { get; set; }                 // ROID — lệnh sửa chữa nguồn
+    public string? OrderId { get; set; }              // OrderID — mã đơn/phiếu liên quan
+    public string CustomerName { get; set; } = "";   // CusName
+    public string? Phone { get; set; }                // Mobile/Tel
+    public string? Plate { get; set; }                // PlateNo
+    public string? FrameNo { get; set; }              // FrameNo
+    public string DealerCode { get; set; } = "";
+    public DateTime? FinishedDate24 { get; set; }     // FinishedDate24 — ngày giao xe (mốc tính 24h)
+    public string Status { get; set; } = "PEND";     // PEND/CINFB/CIFB/REJ
+    public DateTime? ContactDate24 { get; set; }      // ContactDate24 — ngày liên hệ
+    // Trả lời khảo sát (Ser_CustomerCare24h):
+    public string? FyourCSSH24 { get; set; }          // Đánh giá chăm sóc khách hàng
+    public string? WFBasicNeeds24 { get; set; }       // Nhu cầu cơ bản được đáp ứng
+    public string? YourCarProblem24 { get; set; }     // Vấn đề của xe sau dịch vụ
+    public string? YourRIWN24 { get; set; }           // Sẽ giới thiệu (Recommend/Introduce/Would)
+    public string? YourSatisfyQSv24 { get; set; }     // Hài lòng chất lượng dịch vụ
+    public string? YourHopeOfOur24 { get; set; }      // Mong muốn của khách
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Trạng thái phiếu chăm sóc KH (chuyển đổi TConst.SerCareStatus): dùng chung cho phiếu 24h/72h.</summary>
+public static class SerCareStatuses
+{
+    public const string Pending          = "PEND";   // Chưa liên hệ
+    public const string ContactedINeedFB = "CINFB";  // Đã liên hệ, chưa phản hồi
+    public const string ContactedIFNoB   = "CIFB";   // Đã liên hệ, đã phản hồi
+    public const string Reject           = "REJ";    // Không cần liên hệ, bỏ qua
+
+    public static readonly string[] All = { Pending, ContactedINeedFB, ContactedIFNoB, Reject };
+
+    /// <summary>Tên hiển thị tiếng Việt của trạng thái.</summary>
+    public static string Text(string? code) => (code ?? "").Trim().ToUpperInvariant() switch
+    {
+        Pending          => "Chưa liên hệ",
+        ContactedINeedFB => "Đã liên hệ, chưa phản hồi",
+        ContactedIFNoB   => "Đã liên hệ, đã phản hồi",
+        Reject           => "Không liên hệ",
+        _                => code ?? ""
+    };
+}
+
 /// <summary>Phiếu tiếp nhận xe (chuyển đổi Ser_ReceptionF): lập khi khách đến xưởng, ghi nhận tình trạng xe lúc giao.
 /// Vòng đời: P (Tiếp nhận) → A (Giao xe). Chỉ xóa được khi chưa phát sinh lệnh sửa chữa (Ser_RO.ReceptionFNo).</summary>
 public sealed class ReceptionForm

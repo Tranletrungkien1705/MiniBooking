@@ -465,6 +465,41 @@ app.MapPost("/api/post-care/{cusCareId}/reject", async (string cusCareId, IBooki
 
 app.MapGet("/api/post-care-stats", async (IBookingService svc) => Results.Ok(await svc.PostCareStatsAsync())).RequireAuthorization();
 
+// ---- Chăm sóc KH sau dịch vụ 24h (Ser_CustomerCare24h): khảo sát hài lòng sớm sau khi giao xe ----
+app.MapPost("/api/post-care-24h", async (CreatePostCare24hDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusCareId) || string.IsNullOrWhiteSpace(dto.CustomerName))
+        return Results.BadRequest(new { error = "Cần CusCareId và CustomerName." });
+    try { return Results.Ok(await svc.CreatePostCare24hAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/post-care-24h", async (IBookingService svc, string? status, string? dealer, string? dueBefore,
+    string? customerName, string? plate, string? frameNo) =>
+    Results.Ok(await svc.ListPostCares24hAsync(status, dealer, dueBefore, customerName, plate, frameNo))).RequireAuthorization();
+
+app.MapGet("/api/post-care-24h/{cusCareId}", async (string cusCareId, IBookingService svc) =>
+{
+    var r = await svc.GetPostCare24hAsync(cusCareId);
+    return r is null ? Results.NotFound(new { cusCareId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ghi nhận liên hệ + trả lời khảo sát (PEND → CINFB/CIFB).
+app.MapPost("/api/post-care-24h/{cusCareId}/contact", async (string cusCareId, PostCare24hContactDto dto, IBookingService svc) =>
+{
+    var r = await svc.ContactPostCare24hAsync(cusCareId, dto);
+    return r is null ? Results.NotFound(new { cusCareId, error = "Không thấy phiếu chăm sóc 24h hoặc đã bỏ qua." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Bỏ qua không cần liên hệ (REJ).
+app.MapPost("/api/post-care-24h/{cusCareId}/reject", async (string cusCareId, IBookingService svc, string? note) =>
+{
+    var r = await svc.RejectPostCare24hAsync(cusCareId, note);
+    return r is null ? Results.NotFound(new { cusCareId, error = "Không thấy phiếu chăm sóc 24h." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapGet("/api/post-care-24h-stats", async (IBookingService svc) => Results.Ok(await svc.PostCare24hStatsAsync())).RequireAuthorization();
+
 // ---- Phiếu tiếp nhận xe (Ser_ReceptionF): lập khi khách đến xưởng → giao xe (P → A) ----
 app.MapPost("/api/reception-forms", async (CreateReceptionFormDto dto, IBookingService svc) =>
 {
