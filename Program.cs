@@ -214,12 +214,18 @@ app.MapGet("/api/engineers/workload", async (string date, IBookingService svc, s
     Results.Ok(await svc.EngineerWorkloadAsync(date, dealer))).RequireAuthorization();
 
 // ---- Khoang sửa chữa (Ser_Cavity): master + sức chứa theo khung giờ ----
+// Ser_Cavity_Create: tạo/cập nhật khoang (kèm khoảng thời gian sử dụng StartUseDate/FinishUseDate + Status).
 app.MapPost("/api/bays", async (AddBayDto dto, IBookingService svc) =>
-    string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name)
-        ? Results.BadRequest(new { error = "Cần Code và Name." }) : Results.Ok(await svc.AddBayAsync(dto))).RequireAuthorization();
+{
+    if (string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name))
+        return Results.BadRequest(new { error = "Cần Code và Name." });
+    try { return Results.Ok(await svc.AddBayAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
 
-app.MapGet("/api/bays", async (IBookingService svc, string? dealer) =>
-    Results.Ok(await svc.ListBaysAsync(dealer))).RequireAuthorization();
+// Ser_Cavity_Get_Status_DL: danh sách khoang + lọc theo trạng thái sử dụng (statusUse: 1 = đang dùng, 2 = ngưng/chưa dùng).
+app.MapGet("/api/bays", async (IBookingService svc, string? dealer, string? statusUse) =>
+    Results.Ok(await svc.ListBaysAsync(dealer, statusUse))).RequireAuthorization();
 
 app.MapGet("/api/bays/availability", async (string date, IBookingService svc, string? bayCode, string? dealer) =>
     Results.Ok(await svc.SlotAvailabilityAsync(date, bayCode, dealer))).RequireAuthorization();

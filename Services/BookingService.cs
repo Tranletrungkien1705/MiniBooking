@@ -15,7 +15,7 @@ public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? Deal
 public record CreateBirthdayCareDto(string? CareBthId, string? DealerCode, string CusId, string CustomerName, string? Phone, string? Email, string? Plate, string? FrameNo, string? TradeMarkCode, string? ModelName, DateTime? DateBth, string? Remark);
 public record UpdateBirthdayCareDto(string? Status, string? ContactDate, string? Remark, DateTime? DateBth);
 public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
-public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
+public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note, string? StartUseDate = null, string? FinishUseDate = null, string? Status = null);
 public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
 // Ser_GroupRepair: tổ kỹ thuật (Quản lý tổ kỹ thuật) — tạo/cập nhật master nhóm KTV theo xưởng.
@@ -121,7 +121,7 @@ public interface IBookingService
     Task<object> AddEngineerAsync(AddEngineerDto dto);
     Task<object> EngineerWorkloadAsync(string date, string? dealer);
     Task<object> AddBayAsync(AddBayDto dto);
-    Task<object> ListBaysAsync(string? dealer);
+    Task<object> ListBaysAsync(string? dealer, string? statusUse = null);
     Task<object> SlotAvailabilityAsync(string date, string? bayCode, string? dealer);
     Task<object> AddAppTypeAsync(AddAppTypeDto dto);
     Task<object> ListAppTypesAsync(bool? active);
@@ -676,6 +676,11 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     public async Task<object> AddBayAsync(AddBayDto dto)
     {
         var code = dto.Code.Trim().ToUpperInvariant();
+        // Ser_Cavity_Create: validate khoảng thời gian sử dụng (FinishUseDate không được trước StartUseDate).
+        DateTime? startUse = ParseDate(dto.StartUseDate);
+        DateTime? finishUse = ParseDate(dto.FinishUseDate);
+        if (startUse.HasValue && finishUse.HasValue && finishUse.Value < startUse.Value)
+            throw new InvalidOperationException("Ngày ngừng sử dụng (FinishUseDate) không được trước ngày bắt đầu sử dụng (StartUseDate).");
         var b = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
         if (b is null)
         {
@@ -690,19 +695,37 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             b.DealerCode = dto.DealerCode?.Trim() ?? b.DealerCode;
             if (dto.Note != null) b.Note = dto.Note;
         }
+        // Ser_Cavity_Create: lưu khoảng thời gian sử dụng + trạng thái khoang.
+        if (dto.StartUseDate != null) b.StartUseDate = startUse;
+        if (dto.FinishUseDate != null) b.FinishUseDate = finishUse;
+        if (dto.Status != null) b.Status = dto.Status.Trim();
         await db.SaveChangesAsync();
-        return new { b.Code, b.Name, b.BayType, b.CapacityPerSlot, b.DealerCode, b.Active };
+        var now = DateTime.Now;
+        return new { b.Code, b.Name, b.BayType, b.CapacityPerSlot, b.DealerCode, b.Active, b.StartUseDate, b.FinishUseDate, b.Status, statusUse = BayUsageRules.UsageStatus(b.StartUseDate, b.FinishUseDate, now), statusUseText = BayUsageRules.Text(BayUsageRules.UsageStatus(b.StartUseDate, b.FinishUseDate, now)) };
     }
 
-    public async Task<object> ListBaysAsync(string? dealer)
+    // Ser_Cavity_Get_Status_DL: danh sách khoang + lọc theo trạng thái sử dụng (1 = đang dùng, 2 = ngưng/chưa dùng).
+    public async Task<object> ListBaysAsync(string? dealer, string? statusUse = null)
     {
         var q = db.ServiceBays.Where(x => x.OrgId == Org);
         if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
-        var items = await q.OrderBy(x => x.Code).Select(x => new
+        var rows = await q.OrderBy(x => x.Code).ToListAsync();
+        var now = DateTime.Now;
+        var items = rows.Select(x => new
         {
-            x.Code, x.Name, x.BayType, x.CapacityPerSlot, x.DealerCode, x.Active, x.Note
-        }).ToListAsync();
-        return new { count = items.Count, items };
+            x.Code, x.Name, x.BayType, x.CapacityPerSlot, x.DealerCode, x.Active, x.Note,
+            x.StartUseDate, x.FinishUseDate, x.Status,
+            statusUse = BayUsageRules.UsageStatus(x.StartUseDate, x.FinishUseDate, now),
+            statusUseText = BayUsageRules.Text(BayUsageRules.UsageStatus(x.StartUseDate, x.FinishUseDate, now))
+        });
+        // strStatusUseConditionList: 1 = đang sử dụng, 2 = ngưng sử dụng / chưa được sử dụng.
+        if (!string.IsNullOrWhiteSpace(statusUse))
+        {
+            var want = statusUse.Trim();
+            items = items.Where(x => x.statusUse == want);
+        }
+        var list = items.ToList();
+        return new { count = list.Count, items = list };
     }
 
     // Sức chứa còn lại theo từng khoang trong 1 ngày: đếm lịch chưa hủy/không đến theo giờ.
@@ -2002,6 +2025,10 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             ? Array.Empty<string>()
             : raw.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                  .Select(x => x.ToUpperInvariant()).ToArray();
+
+    // Parse ngày tùy chọn (trả null nếu trống/không hợp lệ) — dùng cho khoảng thời gian sử dụng khoang (Ser_Cavity).
+    private static DateTime? ParseDate(string? raw) =>
+        string.IsNullOrWhiteSpace(raw) ? null : (DateTime.TryParse(raw, out var d) ? d : null);
 
     // Map mã trạng thái nguồn (Ser_App.AppStatus: 1 Mới tạo, 2 Xác nhận, 3 Tiếp nhận, 4 Hủy, 5 Đã liên hệ) → ApptStatus.
     private static ApptStatus? ParseSourceStatus(string code) => code switch

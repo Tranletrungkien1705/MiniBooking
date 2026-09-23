@@ -167,7 +167,9 @@ public static class BirthdayCareStatuses
     }
 }
 
-/// <summary>Khoang sửa chữa (chuyển đổi Ser_Cavity): cầu nâng/khoang tiếp nhận theo xưởng, có sức chứa theo khung giờ.</summary>
+/// <summary>Khoang sửa chữa (chuyển đổi Ser_Cavity): cầu nâng/khoang tiếp nhận theo xưởng, có sức chứa theo khung giờ.
+/// StartUseDate/FinishUseDate: khoảng thời gian khoang được đưa vào sử dụng (Ser_Cavity.StartUseDate/FinishUseDate).
+/// Status: trạng thái khoang (Ser_Cavity.Status).</summary>
 public sealed class ServiceBay
 {
     public long Id { get; set; }
@@ -179,7 +181,37 @@ public sealed class ServiceBay
     public string DealerCode { get; set; } = "";
     public bool Active { get; set; } = true;
     public string? Note { get; set; }
+    public DateTime? StartUseDate { get; set; }      // StartUseDate — bắt đầu đưa vào sử dụng
+    public DateTime? FinishUseDate { get; set; }     // FinishUseDate — ngừng sử dụng
+    public string? Status { get; set; }              // Status — trạng thái khoang (Ser_Cavity.Status)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Trạng thái sử dụng khoang (chuyển đổi Ser_Cavity_Get_Status_DL — strStatusUseConditionList):
+/// 1 = đang sử dụng, 2 = ngưng sử dụng / chưa được sử dụng. Dựa trên khoảng StartUseDate..FinishUseDate.</summary>
+public static class BayUsageRules
+{
+    public const string InUse = "1";        // đang sử dụng
+    public const string NotInUse = "2";     // ngưng sử dụng / chưa được sử dụng
+    /// <summary>Khoang đang sử dụng: chưa đặt ngày bắt đầu, hoặc đã bắt đầu và chưa kết thúc (FinishUseDate trống hoặc còn hiệu lực).</summary>
+    public static bool IsInUse(DateTime? startUseDate, DateTime? finishUseDate, DateTime now)
+    {
+        if (startUseDate is null) return true;                       // chưa đặt ngày bắt đầu → coi như đang dùng
+        if (startUseDate.Value > now) return false;                  // chưa tới ngày bắt đầu
+        return finishUseDate is null || finishUseDate.Value >= now;  // đã bắt đầu và chưa kết thúc
+    }
+
+    /// <summary>Mã trạng thái sử dụng (1/2) theo khoảng thời gian sử dụng.</summary>
+    public static string UsageStatus(DateTime? startUseDate, DateTime? finishUseDate, DateTime now)
+        => IsInUse(startUseDate, finishUseDate, now) ? InUse : NotInUse;
+
+    /// <summary>Tên hiển thị tiếng Việt của trạng thái sử dụng.</summary>
+    public static string Text(string? code) => (code ?? "").Trim() switch
+    {
+        InUse    => "Đang sử dụng",
+        NotInUse => "Ngưng sử dụng / Chưa sử dụng",
+        _        => code ?? ""
+    };
 }
 
 /// <summary>Loại cuộc hẹn (chuyển đổi Mst_Ser_AppType): master loại lịch hẹn để phân loại + thống kê.</summary>
