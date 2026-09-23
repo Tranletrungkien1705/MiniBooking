@@ -56,6 +56,17 @@ public sealed class ServiceBay
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Loại cuộc hẹn (chuyển đổi Mst_Ser_AppType): master loại lịch hẹn để phân loại + thống kê.</summary>
+public sealed class AppType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";        // AppTypeCode
+    public string Name { get; set; } = "";        // AppTypeName
+    public bool Active { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

@@ -12,6 +12,7 @@ public record ContactDto(string? Note);
 public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? DealerCode);
 public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
+public record AddAppTypeDto(string Code, string Name);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
@@ -35,6 +36,8 @@ public interface IBookingService
     Task<object> AddBayAsync(AddBayDto dto);
     Task<object> ListBaysAsync(string? dealer);
     Task<object> SlotAvailabilityAsync(string date, string? bayCode, string? dealer);
+    Task<object> AddAppTypeAsync(AddAppTypeDto dto);
+    Task<object> ListAppTypesAsync(bool? active);
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -164,6 +167,9 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     {
         var a = await Get(code);
         if (a is null || a.Status is ApptStatus.Done or ApptStatus.Cancelled) return null;
+        // Ser_App_UpdateStatusX: không cho Hủy khi lịch đã Tiếp nhận (AppStatus=3).
+        if (a.Status == ApptStatus.CheckedIn)
+            throw new InvalidOperationException($"Lịch {a.Code} đã tiếp nhận, không thể hủy.");
         a.Status = noShow ? ApptStatus.NoShow : ApptStatus.Cancelled;
         await db.SaveChangesAsync();
         return new { a.Code, status = a.Status.ToString() };
@@ -346,5 +352,24 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             };
         });
         return new { date = d.ToString("yyyy-MM-dd"), bays = bays.Count, items };
+    }
+
+    // ===== Loại cuộc hẹn (Mst_Ser_AppType) =====
+    public async Task<object> AddAppTypeAsync(AddAppTypeDto dto)
+    {
+        var code = dto.Code.Trim().ToUpperInvariant();
+        var t = await db.AppTypes.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
+        if (t is null) { t = new AppType { OrgId = Org, Code = code, Name = dto.Name.Trim(), Active = true }; db.AppTypes.Add(t); }
+        else { t.Name = dto.Name.Trim(); t.Active = true; }
+        await db.SaveChangesAsync();
+        return new { t.Code, t.Name, t.Active };
+    }
+
+    public async Task<object> ListAppTypesAsync(bool? active)
+    {
+        var q = db.AppTypes.Where(x => x.OrgId == Org);
+        if (active.HasValue) q = q.Where(x => x.Active == active.Value);
+        var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
+        return new { count = items.Count, items };
     }
 }

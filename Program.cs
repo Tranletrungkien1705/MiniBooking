@@ -119,8 +119,12 @@ app.MapPost("/api/appointments/{code}/done", async (string code, IBookingService
 
 app.MapPost("/api/appointments/{code}/cancel", async (string code, IBookingService svc, bool? noShow) =>
 {
-    var r = await svc.CancelAsync(code, noShow ?? false);
-    return r is null ? Results.NotFound(new { code, error = "Không hủy được (đã xong/đã hủy)." }) : Results.Ok(r);
+    try
+    {
+        var r = await svc.CancelAsync(code, noShow ?? false);
+        return r is null ? Results.NotFound(new { code, error = "Không hủy được (đã xong/đã hủy)." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
 }).RequireAuthorization();
 
 app.MapGet("/api/calendar", async (string date, IBookingService svc, string? dealer) =>
@@ -146,6 +150,14 @@ app.MapGet("/api/bays", async (IBookingService svc, string? dealer) =>
 
 app.MapGet("/api/bays/availability", async (string date, IBookingService svc, string? bayCode, string? dealer) =>
     Results.Ok(await svc.SlotAvailabilityAsync(date, bayCode, dealer))).RequireAuthorization();
+
+// ---- Loại cuộc hẹn (Mst_Ser_AppType): master + danh sách ----
+app.MapPost("/api/app-types", async (AddAppTypeDto dto, IBookingService svc) =>
+    string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name)
+        ? Results.BadRequest(new { error = "Cần Code và Name." }) : Results.Ok(await svc.AddAppTypeAsync(dto))).RequireAuthorization();
+
+app.MapGet("/api/app-types", async (IBookingService svc, bool? active) =>
+    Results.Ok(await svc.ListAppTypesAsync(active))).RequireAuthorization();
 
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
