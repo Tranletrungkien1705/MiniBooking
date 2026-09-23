@@ -89,6 +89,8 @@ public record CreateCampaignDto(string? CamMarketingNo, string CamMarketingName,
 public record MatchCampaignsDto(string? CarIds, string? RoIds, string? EffDate);
 // Ser_MST_ROMaintanceSetting: thiết lập bảo dưỡng định kỳ (mốc Km → số lần bảo dưỡng thỏa mãn CSBH).
 public record SaveMaintenanceSettingDto(string? RomsId, int Km, int Maintances, bool? FlagActive, string? LogLUBy);
+// Ser_App_UpdateStatusDL: đổi trạng thái lịch hẹn theo máy trạng thái AppStatus (1..5) + ghi lịch sử.
+public record ChangeApptStatusDto(string ToStatus, string? Note, string? ChangedBy);
 
 public interface IBookingService
 {
@@ -190,6 +192,8 @@ public interface IBookingService
     Task<object> SaveMaintenanceSettingAsync(SaveMaintenanceSettingDto dto);      // tạo/cập nhật thiết lập bảo dưỡng (Ser_MST_ROMaintanceSetting_Save)
     Task<object?> DeleteMaintenanceSettingAsync(string romsId);                   // xóa thiết lập bảo dưỡng
     Task<object?> SuggestMaintenanceForKmAsync(int km);                           // gợi ý mốc bảo dưỡng kế tiếp theo số Km hiện tại
+    Task<object?> ChangeAppointmentStatusAsync(string code, ChangeApptStatusDto dto);  // đổi trạng thái lịch hẹn (Ser_App_UpdateStatusDL)
+    Task<object?> GetAppointmentStatusHistoryAsync(string code);                  // lịch sử đổi trạng thái lịch hẹn
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -2859,6 +2863,78 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             totalPartAmount = Math.Round(items.Sum(x => x.partAmount), 2),
             byGroup = items.GroupBy(x => x.group).Select(g => new { group = g.Key, count = g.Count(), revenue = Math.Round(g.Sum(x => x.revenue), 2) }),
             items
+        };
+    }
+
+    // Ser_App_UpdateStatusDL / Ser_App_UpdateStatusX: đổi trạng thái lịch hẹn theo máy trạng thái AppStatus
+    // (1=Mới tạo, 2=Xác nhận, 3=Tiếp nhận, 4=Hủy, 5=Đã liên hệ & Chưa xác nhận).
+    // Quy tắc nguồn: không cho Hủy (4) khi lịch đã Tiếp nhận (3) — Ser_App_UpdateStatusX_StatusReceptionNotCancel;
+    // trạng thái đích phải nằm trong danh sách nguồn hợp lệ (Ser_App_CheckDB_AppStatusNotMatched).
+    public async Task<object?> ChangeAppointmentStatusAsync(string code, ChangeApptStatusDto dto)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+
+        var to = (dto.ToStatus ?? "").Trim();
+        if (!ApptStatusRules.All.Contains(to))
+            throw new InvalidOperationException($"Trạng thái '{to}' không hợp lệ (1=Mới tạo, 2=Xác nhận, 3=Tiếp nhận, 4=Hủy, 5=Đã liên hệ & Chưa xác nhận).");
+
+        var from = ApptStatusRules.CodeOf(a.Status);
+        if (from.Length == 0)
+            throw new InvalidOperationException($"Lịch {a.Code} đang ở trạng thái '{a.Status}' không đổi được qua API này.");
+        if (from == to)
+            throw new InvalidOperationException($"Lịch {a.Code} đã ở trạng thái '{ApptStatusRules.Text(to)}'.");
+
+        // Ser_App_UpdateStatusX_StatusReceptionNotCancel: chặn Hủy khi đã Tiếp nhận.
+        if (to == ApptStatusRules.CancelCode && from == ApptStatusRules.ReceptionCode)
+            throw new InvalidOperationException($"Lịch {a.Code} đã tiếp nhận, không thể hủy.");
+
+        // Ser_App_CheckDB_AppStatusNotMatched: trạng thái hiện tại phải nằm trong danh sách nguồn hợp lệ.
+        if (!ApptStatusRules.CanTransition(from, to))
+            throw new InvalidOperationException($"Không thể chuyển lịch {a.Code} từ '{ApptStatusRules.Text(from)}' sang '{ApptStatusRules.Text(to)}'.");
+
+        var now = DateTime.Now;
+        a.Status = to switch
+        {
+            ApptStatusRules.NewStatus     => ApptStatus.Requested,
+            ApptStatusRules.ConfirmedCode => ApptStatus.Confirmed,
+            ApptStatusRules.ReceptionCode => ApptStatus.CheckedIn,
+            ApptStatusRules.CancelCode    => ApptStatus.Cancelled,
+            ApptStatusRules.ContactedCode => ApptStatus.Contacted,
+            _                             => a.Status
+        };
+        // Mốc thời gian tương ứng khi vào trạng thái (giống các endpoint chuyên biệt).
+        if (a.Status == ApptStatus.CheckedIn) a.CheckedInAt = now;
+        if (a.Status == ApptStatus.Contacted) a.ContactedAt = now;
+
+        db.ApptStatusHistories.Add(new ApptStatusHistory
+        {
+            OrgId = Org, AppCode = a.Code, FromStatus = from, ToStatus = to,
+            Note = dto.Note, ChangedBy = dto.ChangedBy, ChangedAt = now
+        });
+        await db.SaveChangesAsync();
+        return new { a.Code, fromStatus = from, fromStatusText = ApptStatusRules.Text(from), toStatus = to, toStatusText = ApptStatusRules.Text(to), status = a.Status.ToString(), statusText = Text(a.Status), changedAt = now };
+    }
+
+    // Lịch sử đổi trạng thái lịch hẹn (Ser_App_UpdateStatusDL) — mới nhất trước.
+    public async Task<object?> GetAppointmentStatusHistoryAsync(string code)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        var items = await db.ApptStatusHistories.Where(x => x.OrgId == Org && x.AppCode == a.Code)
+            .OrderByDescending(x => x.ChangedAt)
+            .Select(x => new { x.Id, x.FromStatus, x.ToStatus, x.Note, x.ChangedBy, x.ChangedAt })
+            .ToListAsync();
+        return new
+        {
+            a.Code, status = a.Status.ToString(), statusText = Text(a.Status),
+            count = items.Count,
+            items = items.Select(x => new
+            {
+                x.Id, x.FromStatus, fromStatusText = ApptStatusRules.Text(x.FromStatus),
+                x.ToStatus, toStatusText = ApptStatusRules.Text(x.ToStatus),
+                x.Note, x.ChangedBy, x.ChangedAt
+            })
         };
     }
 }

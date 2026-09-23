@@ -12,6 +12,78 @@ public sealed class Org
 /// Contacted = AppStatus=5 'Đã liên hệ &amp; Chưa xác nhận' (Ser_CustomerCare72h): tổng đài gọi xác nhận lịch trước giờ hẹn.</summary>
 public enum ApptStatus { Requested = 0, Confirmed = 1, CheckedIn = 2, Done = 3, Cancelled = 4, NoShow = 5, Contacted = 6 }
 
+/// <summary>Máy trạng thái lịch hẹn (chuyển đổi Ser_App.AppStatus: 1=Mới tạo, 2=Xác nhận, 3=Tiếp nhận,
+/// 4=Hủy, 5=Đã liên hệ &amp; Chưa xác nhận) dùng cho đổi trạng thái qua Ser_App_UpdateStatusDL.
+/// Quy tắc: không cho Hủy (4) khi lịch đã Tiếp nhận (3) — lỗi Ser_App_UpdateStatusX_StatusReceptionNotCancel.</summary>
+public static class ApptStatusRules
+{
+    /// <summary>Mã AppStatus theo nguồn 2023.H.CarServices.</summary>
+    public const string NewStatus      = "1";   // Mới tạo
+    public const string ConfirmedCode  = "2";   // Xác nhận
+    public const string ReceptionCode  = "3";   // Tiếp nhận
+    public const string CancelCode     = "4";   // Hủy
+    public const string ContactedCode  = "5";   // Đã liên hệ & Chưa xác nhận
+
+    public static readonly string[] All = { NewStatus, ConfirmedCode, ReceptionCode, CancelCode, ContactedCode };
+
+    /// <summary>Mã AppStatus (nguồn) tương ứng 1 ApptStatus nội bộ.</summary>
+    public static string CodeOf(ApptStatus s) => s switch
+    {
+        ApptStatus.Requested => NewStatus,
+        ApptStatus.Confirmed => ConfirmedCode,
+        ApptStatus.CheckedIn => ReceptionCode,
+        ApptStatus.Cancelled => CancelCode,
+        ApptStatus.Contacted => ContactedCode,
+        _ => ""
+    };
+
+    /// <summary>Tên hiển thị tiếng Việt của mã AppStatus.</summary>
+    public static string Text(string? code) => (code ?? "").Trim() switch
+    {
+        NewStatus     => "Mới tạo",
+        ConfirmedCode => "Xác nhận",
+        ReceptionCode => "Tiếp nhận",
+        CancelCode    => "Hủy",
+        ContactedCode => "Đã liên hệ & Chưa xác nhận",
+        _             => code ?? ""
+    };
+
+    /// <summary>Danh sách mã AppStatus nguồn (con chuỗi) hợp lệ để chuyển sang <paramref name="to"/> với 1 lịch hẹn.
+    /// Dựa theo các hàm đổi trạng thái Ser_App_UpdateStatusX (Mới tạo→Xác nhận/Tiếp nhận/Hủy;
+    /// Xác nhận→Tiếp nhận/Hủy; Đã liên hệ→Xác nhận/Hủy; Tiếp nhận→Hoàn tất...).</summary>
+    public static string[] AllowedFromCodes(string? to) => (to ?? "").Trim() switch
+    {
+        ConfirmedCode => new[] { NewStatus, ContactedCode },
+        ReceptionCode => new[] { NewStatus, ConfirmedCode, ContactedCode },
+        CancelCode    => new[] { NewStatus, ConfirmedCode, ContactedCode, ReceptionCode },
+        ContactedCode => new[] { NewStatus },
+        _             => Array.Empty<string>()
+    };
+
+    /// <summary>True nếu chuyển từ mã <paramref name="from"/> sang <paramref name="to"/> hợp lệ (theo danh sách nguồn).</summary>
+    public static bool CanTransition(string? from, string? to)
+    {
+        var f = (from ?? "").Trim();
+        var t = (to ?? "").Trim();
+        if (f.Length == 0 || t.Length == 0 || f == t) return false;
+        return AllowedFromCodes(t).Contains(f);
+    }
+}
+
+/// <summary>Lịch sử đổi trạng thái lịch hẹn (chuyển đổi Ser_App_UpdateStatusDL): ghi lại mỗi lần đổi
+/// AppStatus của 1 lịch hẹn để trace/audit (ai đổi, từ trạng thái nào sang trạng thái nào, khi nào).</summary>
+public sealed class ApptStatusHistory
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppCode { get; set; } = "";     // mã lịch hẹn (Ser_App.AppId/Code)
+    public string? FromStatus { get; set; }         // AppStatus trước (mã nguồn)
+    public string ToStatus { get; set; } = "";     // AppStatus sau (mã nguồn)
+    public string? Note { get; set; }               // ghi chú
+    public string? ChangedBy { get; set; }          // người đổi (LogLUBy)
+    public DateTime ChangedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Kỹ thuật viên (Ser_Engineer): roster + kỹ năng để phân lịch + đo tải.</summary>
 public sealed class Engineer
 {

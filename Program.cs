@@ -181,9 +181,28 @@ app.MapPost("/api/appointments/{code}/cancel", async (string code, IBookingServi
     catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
 }).RequireAuthorization();
 
+// Ser_App_UpdateStatusDL: đổi trạng thái lịch hẹn theo máy trạng thái AppStatus
+// (1=Mới tạo, 2=Xác nhận, 3=Tiếp nhận, 4=Hủy, 5=Đã liên hệ & Chưa xác nhận) + ghi lịch sử.
+app.MapPost("/api/appointments/{code}/status", async (string code, ChangeApptStatusDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ToStatus)) return Results.BadRequest(new { error = "Cần ToStatus." });
+    try
+    {
+        var r = await svc.ChangeAppointmentStatusAsync(code, dto);
+        return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
+}).RequireAuthorization();
+
+// Lịch sử đổi trạng thái lịch hẹn (Ser_App_UpdateStatusDL).
+app.MapGet("/api/appointments/{code}/status-history", async (string code, IBookingService svc) =>
+{
+    var r = await svc.GetAppointmentStatusHistoryAsync(code);
+    return r is null ? Results.NotFound(new { code, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
 app.MapGet("/api/calendar", async (string date, IBookingService svc, string? dealer) =>
     Results.Ok(await svc.CalendarAsync(date, dealer))).RequireAuthorization();
-
 app.MapGet("/api/stats", async (IBookingService svc) => Results.Ok(await svc.StatsAsync())).RequireAuthorization();
 
 // ---- Kỹ thuật viên (Ser_Engineer): roster + tải công việc ----

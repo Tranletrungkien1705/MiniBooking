@@ -34,6 +34,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CampaignMarketingPart> CampaignMarketingParts => Set<CampaignMarketingPart>();
     public DbSet<CampaignMarketingCondition> CampaignMarketingConditions => Set<CampaignMarketingCondition>();
     public DbSet<MaintenanceSetting> MaintenanceSettings => Set<MaintenanceSetting>();
+    public DbSet<ApptStatusHistory> ApptStatusHistories => Set<ApptStatusHistory>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -66,5 +67,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<CampaignMarketingCondition>().HasIndex(x => new { x.OrgId, x.CamMarketingNo, x.ConditionType });
         b.Entity<MaintenanceSetting>().HasIndex(x => new { x.OrgId, x.RomsId }).IsUnique();
         b.Entity<MaintenanceSetting>().HasIndex(x => new { x.OrgId, x.Km }).IsUnique();
+        b.Entity<ApptStatusHistory>().HasIndex(x => new { x.OrgId, x.AppCode, x.ChangedAt });
     }
 }
