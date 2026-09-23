@@ -159,6 +159,14 @@ app.MapPost("/api/app-types", async (AddAppTypeDto dto, IBookingService svc) =>
 app.MapGet("/api/app-types", async (IBookingService svc, bool? active) =>
     Results.Ok(await svc.ListAppTypesAsync(active))).RequireAuthorization();
 
+// ---- Loại khoang sửa chữa (Mst_Compartment / Ser_Cavity.CavityType): master + ràng buộc theo dịch vụ ----
+app.MapPost("/api/cavity-types", async (AddCavityTypeDto dto, IBookingService svc) =>
+    string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name)
+        ? Results.BadRequest(new { error = "Cần Code và Name." }) : Results.Ok(await svc.AddCavityTypeAsync(dto))).RequireAuthorization();
+
+app.MapGet("/api/cavity-types", async (IBookingService svc, bool? active) =>
+    Results.Ok(await svc.ListCavityTypesAsync(active))).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {

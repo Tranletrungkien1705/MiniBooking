@@ -67,6 +67,60 @@ public sealed class AppType
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Loại khoang sửa chữa (chuyển đổi Mst_Compartment / Ser_Cavity.CavityType):
+/// BDN bảo dưỡng nhanh · SCC sửa chữa chung (RO) · KD đồng · KS sơn (BP) · BS buồng sơn · KTN đỗ xe · KHAC khác.</summary>
+public sealed class CavityType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";        // CompartmentCode / CavityType
+    public string Name { get; set; } = "";
+    public bool Active { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Ràng buộc khoang theo loại dịch vụ (Ser_Cavity.CavityType ↔ Ser_App.ServiceType):
+/// mỗi loại dịch vụ chỉ được xếp vào các loại khoang tương thích.</summary>
+public static class CavityRules
+{
+    // Mã loại khoang chuẩn theo 2023.H.CarServices (Ser_Cavity.CavityType).
+    public const string Maintain = "BDN";   // Bảo dưỡng nhanh
+    public const string Repair   = "SCC";   // Sửa chữa chung (RO)
+    public const string Copper   = "KD";    // Đồng
+    public const string Paint    = "KS";    // Sơn (BP)
+    public const string PaintBooth = "BS";  // Buồng sơn
+    public const string Parking  = "KTN";   // Đỗ xe / giao xe
+    public const string Other    = "KHAC";  // Khác (kiểm tra cuối, thử phanh)
+
+    /// <summary>Loại khoang được phép cho một loại dịch vụ (ServiceType).</summary>
+    public static string[] AllowedFor(string? serviceType)
+    {
+        var s = (serviceType ?? "").Trim().ToLowerInvariant();
+        if (s.Contains("bảo dưỡng") || s.Contains("bao duong") || s.Contains("maintain"))
+            return new[] { Maintain, Other };
+        if (s.Contains("đồng") || s.Contains("dong") || s.Contains("copper"))
+            return new[] { Copper, Paint, PaintBooth, Other };
+        if (s.Contains("sơn") || s.Contains("son") || s.Contains("paint") || s.Contains("đồng sơn") || s.Contains("dong son"))
+            return new[] { Paint, PaintBooth, Copper, Other };
+        if (s.Contains("sửa chữa") || s.Contains("sua chua") || s.Contains("repair") || s.Contains("ro"))
+            return new[] { Repair, Other };
+        if (s.Contains("bảo hành") || s.Contains("bao hanh") || s.Contains("warranty"))
+            return new[] { Repair, Other };
+        // Mặc định: cho phép mọi loại khoang (không chặn khi chưa phân loại rõ).
+        return Array.Empty<string>();
+    }
+
+    /// <summary>True nếu khoang loại <paramref name="bayType"/> phù hợp với loại dịch vụ.</summary>
+    public static bool IsCompatible(string? serviceType, string? bayType)
+    {
+        var allowed = AllowedFor(serviceType);
+        if (allowed.Length == 0) return true;                 // chưa rõ loại → không chặn
+        var bt = (bayType ?? "").Trim().ToUpperInvariant();
+        if (bt.Length == 0) return true;                      // khoang chưa gán loại → không chặn
+        return allowed.Contains(bt);
+    }
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

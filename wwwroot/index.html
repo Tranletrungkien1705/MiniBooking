@@ -14,7 +14,8 @@
 <li><code>POST /api/bays</code> · <code>GET /api/bays?dealer=</code> — khoang sửa chữa (Ser_Cavity)</li>
 <li><code>GET /api/bays/availability?date=&bayCode=&dealer=</code> — sức chứa còn lại theo khoang</li>
 <li><code>POST /api/app-types</code> · <code>GET /api/app-types?active=</code> — loại cuộc hẹn (Mst_Ser_AppType)</li>
+<li><code>POST /api/cavity-types</code> · <code>GET /api/cavity-types?active=</code> — loại khoang sửa chữa (Mst_Compartment / Ser_Cavity.CavityType)</li>
 </ul>
-<p class="muted">Xác nhận lịch có gán khoang + khung giờ; chặn trùng khung giờ trên cùng khoang (MyCheck_DateTime_Cavity). Không hủy được lịch đã tiếp nhận (Ser_App_UpdateStatusX).</p>
+<p class="muted">Xác nhận lịch có gán khoang + khung giờ; chặn trùng khung giờ trên cùng khoang (MyCheck_DateTime_Cavity). Không hủy được lịch đã tiếp nhận (Ser_App_UpdateStatusX). Ràng buộc khoang theo loại dịch vụ: bảo dưỡng→BDN, sửa chữa/bảo hành→SCC, đồng→KD, sơn→KS/BS (Ser_Cavity.CavityType).</p>
 <p class="muted">SSO: <code>/api/whoami</code>. Swagger: <a href="/swagger">/swagger</a>.</p>
 </body></html>

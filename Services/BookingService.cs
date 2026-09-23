@@ -13,6 +13,7 @@ public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? Deal
 public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
 public record AddAppTypeDto(string Code, string Name);
+public record AddCavityTypeDto(string Code, string Name);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
@@ -38,6 +39,8 @@ public interface IBookingService
     Task<object> SlotAvailabilityAsync(string date, string? bayCode, string? dealer);
     Task<object> AddAppTypeAsync(AddAppTypeDto dto);
     Task<object> ListAppTypesAsync(bool? active);
+    Task<object> AddCavityTypeAsync(AddCavityTypeDto dto);
+    Task<object> ListCavityTypesAsync(bool? active);
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -49,11 +52,24 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     public async Task<object> BookAsync(BookDto dto)
     {
         var code = "AP" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99);
+        var serviceType = string.IsNullOrWhiteSpace(dto.ServiceType) ? "Bảo dưỡng" : dto.ServiceType!.Trim();
+
+        // SerAppCreateDL_AppTypeCodeNotEmpty: loại cuộc hẹn phải có và tồn tại trong master Mst_Ser_AppType.
+        var appTypeCode = dto.AppTypeCode?.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(appTypeCode))
+        {
+            var ok = await db.AppTypes.AnyAsync(x => x.OrgId == Org && x.Code == appTypeCode && x.Active);
+            if (!ok) throw new InvalidOperationException($"Loại cuộc hẹn '{appTypeCode}' không tồn tại hoặc đã ngừng dùng.");
+        }
+
         var bayCode = dto.BayCode?.Trim().ToUpperInvariant();
         if (!string.IsNullOrWhiteSpace(bayCode))
         {
             var bay = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == bayCode && x.Active);
             if (bay is null) throw new InvalidOperationException($"Khoang '{bayCode}' không tồn tại hoặc đã ngừng dùng.");
+            // Ràng buộc khoang theo loại dịch vụ (Ser_Cavity.CavityType ↔ Ser_App.ServiceType).
+            if (!CavityRules.IsCompatible(serviceType, bay.BayType))
+                throw new InvalidOperationException($"Khoang '{bayCode}' (loại {bay.BayType}) không phù hợp với dịch vụ '{serviceType}'.");
             var booked = await db.Appointments.CountAsync(a => a.OrgId == Org && a.BayCode == bayCode
                 && a.PreferredAt.Date == dto.PreferredAt.Date
                 && a.Status != ApptStatus.Cancelled && a.Status != ApptStatus.NoShow);
@@ -64,9 +80,9 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         {
             OrgId = Org, Code = code, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone.Trim(),
             Vin = dto.Vin?.Trim().ToUpperInvariant(), Plate = dto.Plate?.Trim(),
-            ServiceType = string.IsNullOrWhiteSpace(dto.ServiceType) ? "Bảo dưỡng" : dto.ServiceType!.Trim(),
+            ServiceType = serviceType,
             PreferredAt = dto.PreferredAt, DealerCode = dto.DealerCode?.Trim() ?? "", Note = dto.Note,
-            BayCode = bayCode, AppTypeCode = dto.AppTypeCode?.Trim(),
+            BayCode = bayCode, AppTypeCode = appTypeCode,
             Status = ApptStatus.Requested
         };
         db.Appointments.Add(a);
@@ -117,6 +133,9 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         {
             var bay = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == bayCode && x.Active);
             if (bay is null) throw new InvalidOperationException($"Khoang '{bayCode}' không tồn tại hoặc đã ngừng dùng.");
+            // Ràng buộc khoang theo loại dịch vụ (Ser_Cavity.CavityType ↔ Ser_App.ServiceType).
+            if (!CavityRules.IsCompatible(a.ServiceType, bay.BayType))
+                throw new InvalidOperationException($"Khoang '{bayCode}' (loại {bay.BayType}) không phù hợp với dịch vụ '{a.ServiceType}'.");
             // MyCheck_DateTime_Cavity: chặn trùng khung giờ trên cùng khoang (bỏ qua lịch đã hủy/không đến).
             var conflict = await FindBayConflictAsync(bayCode, slotFrom, slotTo, a.Id);
             if (conflict is not null)
@@ -368,6 +387,25 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     public async Task<object> ListAppTypesAsync(bool? active)
     {
         var q = db.AppTypes.Where(x => x.OrgId == Org);
+        if (active.HasValue) q = q.Where(x => x.Active == active.Value);
+        var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    // ===== Loại khoang sửa chữa (Mst_Compartment / Ser_Cavity.CavityType) =====
+    public async Task<object> AddCavityTypeAsync(AddCavityTypeDto dto)
+    {
+        var code = dto.Code.Trim().ToUpperInvariant();
+        var t = await db.CavityTypes.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
+        if (t is null) { t = new CavityType { OrgId = Org, Code = code, Name = dto.Name.Trim(), Active = true }; db.CavityTypes.Add(t); }
+        else { t.Name = dto.Name.Trim(); t.Active = true; }
+        await db.SaveChangesAsync();
+        return new { t.Code, t.Name, t.Active };
+    }
+
+    public async Task<object> ListCavityTypesAsync(bool? active)
+    {
+        var q = db.CavityTypes.Where(x => x.OrgId == Org);
         if (active.HasValue) q = q.Where(x => x.Active == active.Value);
         var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
         return new { count = items.Count, items };
