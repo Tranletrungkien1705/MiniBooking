@@ -39,6 +39,9 @@ public record RejectRepairOrderDto(string RejectDate, string RejectNote, string?
 public record UpdatePlannedDeliveryDateDto(string PlanedDeliveryDate, string? Remark, string? ChangedBy);
 // Ser_RO_Sumary_DL: thống kê lệnh sửa chữa theo ngày (lọc đại lý '|', khoảng ngày CheckInDate, trạng thái '|').
 public record RoSummaryDto(string? DealerCodes, string? FromDate, string? ToDate, string? Statuses);
+// Ser_RO_Update_Maintance_DL: cập nhật thông tin nhắc bảo dưỡng kế tiếp của lệnh sửa chữa
+// (Km hiện tại + ngày/mốc Km nhắc bảo dưỡng + công việc cần làm sớm + mã hội viên).
+public record UpdateRoMaintenanceDto(int? Km, string? ReminderMaintanceDate, int? ReminderMaintanceKm, string? WorkDoneSoon, string? MemberNo, string? ChangedBy);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
@@ -140,6 +143,7 @@ public interface IBookingService
     Task<object?> UpdatePlannedDeliveryDateAsync(string roId, UpdatePlannedDeliveryDateDto dto);  // lưu ngày giao xe dự kiến (Ser_RO_UpdatePlanedDeliveryDateDL)
     Task<object?> GetPlannedDeliveryDateHistoryAsync(string roId);           // lịch sử ngày giao xe dự kiến (Ser_Ro_PlanedDeliveryDate_His)
     Task<object> SummarizeRepairOrdersAsync(RoSummaryDto dto);               // thống kê lệnh sửa chữa theo ngày + doanh thu (Ser_RO_Sumary_DL)
+    Task<object?> UpdateRoMaintenanceAsync(string roId, UpdateRoMaintenanceDto dto);  // cập nhật thông tin nhắc bảo dưỡng của RO (Ser_RO_Update_Maintance_DL)
     Task<object?> GetRepairOrderForAppointmentAsync(string roId);            // dữ liệu RO để tạo lịch hẹn (Ser_RO_GetForSerAppDL)
     Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto);       // thêm dòng công việc vào RO (Ser_ROServiceItems)
     Task<object?> ListRoServiceItemsAsync(string roId);                              // danh sách công việc của RO + tổng tiền
@@ -1193,6 +1197,50 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             .OrderByDescending(x => x.CreatedDate)
             .Select(x => new { x.Id, x.PlanedDeliveryDate, x.Remark, x.FlagCurrent, x.CreatedBy, x.CreatedDate }).ToListAsync();
         return new { ro.RoId, current = ro.PlanedDeliveryDate, count = items.Count, items };
+    }
+
+    // Ser_RO_Update_Maintance_DL: cập nhật thông tin nhắc bảo dưỡng kế tiếp của 1 lệnh sửa chữa.
+    // Quy tắc (theo BizCarSv.Service01.Ser_RO_Update_Maintance_DL):
+    //  - RO phải tồn tại (Ser_RO_Update_Maintance_RONotExist).
+    //  - Không cho cập nhật khi RO đã Đã thanh toán (PAID) hoặc Đã hoàn thành (FNS)
+    //    (Ser_RO_Update_Maintance_InvalidStatus).
+    //  - Cập nhật Km/ReminderMaintanceDate/ReminderMaintanceKm/WorkDoneSoon/MemberNo + LogLUDateTime/LogLUBy.
+    public async Task<object?> UpdateRoMaintenanceAsync(string roId, UpdateRoMaintenanceDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        // Không cho cập nhật khi RO đã thanh toán/hoàn tất (Ser_RO_Update_Maintance_InvalidStatus).
+        var status = (ro.Status ?? "").Trim().ToUpperInvariant();
+        if (status == RoStages.Paid || status == RoStages.Finished)
+            throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đang ở trạng thái {RoStages.Text(status)}, không thể cập nhật thông tin nhắc bảo dưỡng.");
+
+        // Ngày nhắc bảo dưỡng (nếu có) phải hợp lệ.
+        DateTime? reminderDate = null;
+        if (!string.IsNullOrWhiteSpace(dto.ReminderMaintanceDate))
+        {
+            if (!DateTime.TryParse(dto.ReminderMaintanceDate, out var rd))
+                throw new InvalidOperationException("ReminderMaintanceDate không hợp lệ (định dạng ngày).");
+            reminderDate = rd.Date;
+        }
+
+        var now = DateTime.Now;
+        ro.Km = dto.Km;
+        ro.ReminderMaintanceDate = reminderDate;
+        ro.ReminderMaintanceKm = dto.ReminderMaintanceKm;
+        ro.WorkDoneSoon = dto.WorkDoneSoon?.Trim();
+        ro.MemberNo = dto.MemberNo?.Trim();
+        ro.LogLUDateTime = now;
+        ro.LogLUBy = dto.ChangedBy;
+        await db.SaveChangesAsync();
+
+        return new
+        {
+            ro.RoId, ro.RoNo, ro.Status,
+            ro.Km, ro.ReminderMaintanceDate, ro.ReminderMaintanceKm, ro.WorkDoneSoon, ro.MemberNo,
+            ro.LogLUDateTime, ro.LogLUBy
+        };
     }
 
     // Ser_RO_GetForSerAppDL: lấy dữ liệu 1 lệnh sửa chữa để TẠO LỊCH HẸN (Ser_App) từ RO.

@@ -255,6 +255,14 @@ public sealed class RepairOrder
     // Ser_RO.ServiceStatus: 1 = mọi công việc của RO đã hoàn thành, 0 = còn công việc chưa xong.
     // Tự động cập nhật khi đổi trạng thái từng dòng công việc (Ser_RO_Update_ServiceItemsStatusRODL).
     public bool ServiceStatus { get; set; }
+    // Ser_RO_Update_Maintance_DL: thông tin nhắc bảo dưỡng kế tiếp của xe (Km hiện tại + mốc nhắc).
+    public int? Km { get; set; }                       // Km — số Kilomet hiện tại của xe
+    public DateTime? ReminderMaintanceDate { get; set; } // ReminderMaintanceDate — ngày nhắc bảo dưỡng kế tiếp
+    public int? ReminderMaintanceKm { get; set; }      // ReminderMaintanceKm — mốc Km nhắc bảo dưỡng kế tiếp
+    public string? WorkDoneSoon { get; set; }          // WorkDoneSoon — công việc cần làm sớm
+    public string? MemberNo { get; set; }              // MemberNo — mã hội viên/thành viên
+    public DateTime? LogLUDateTime { get; set; }       // LogLUDateTime — lần cập nhật gần nhất
+    public string? LogLUBy { get; set; }               // LogLUBy — người cập nhật gần nhất
 }
 
 /// <summary>Dòng công việc trong lệnh sửa chữa (chuyển đổi Ser_ROServiceItems): mỗi công việc khách

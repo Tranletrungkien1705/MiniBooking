@@ -382,6 +382,18 @@ app.MapGet("/api/repair-orders/{roId}/planned-delivery-date", async (string roId
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// Ser_RO_Update_Maintance_DL: cập nhật thông tin nhắc bảo dưỡng kế tiếp của lệnh sửa chữa
+// (Km hiện tại + ngày/mốc Km nhắc bảo dưỡng + công việc cần làm sớm + mã hội viên).
+app.MapPost("/api/repair-orders/{roId}/maintenance", async (string roId, UpdateRoMaintenanceDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateRoMaintenanceAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
 // Ser_RO_Sumary_DL: thống kê lệnh sửa chữa theo ngày (lọc đại lý '|', khoảng ngày CheckInDate, trạng thái '|')
 // + doanh thu mỗi RO = Σ phụ tùng + Σ công việc (Price*Qty*Factor*(1+VAT/100)).
 app.MapGet("/api/repair-orders/summary", async (IBookingService svc, string? dealerCodes, string? fromDate, string? toDate, string? statuses) =>
