@@ -152,6 +152,26 @@ public sealed class AppPartItem
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lệnh sửa chữa / báo giá (chuyển đổi Ser_RO): phiếu tiếp nhận xe vào xưởng.
+/// Một RO có thể sinh ra 1 cuộc hẹn (Ser_RO.AppId ↔ Ser_App.ROID) — dùng để nối lịch hẹn với lệnh sửa chữa.</summary>
+public sealed class RepairOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID (mã lệnh sửa chữa)
+    public string RoNo { get; set; } = "";        // RONo (số báo giá)
+    public string DealerCode { get; set; } = "";
+    public string CusName { get; set; } = "";     // CusName
+    public string? CusTel { get; set; }            // CusTel
+    public string? PlateNo { get; set; }           // PlateNo
+    public string? FrameNo { get; set; }           // FrameNo
+    public string? CusRequest { get; set; }        // Yêu cầu khách hàng
+    public string Status { get; set; } = "Open";   // trạng thái báo giá
+    public string? AppCode { get; set; }           // AppId — cuộc hẹn đã gắn (Ser_RO.AppId)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? LinkedAt { get; set; }        // thời điểm gắn cuộc hẹn
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {
@@ -179,4 +199,5 @@ public sealed class Appointment
     public DateTime? ContactedAt { get; set; }    // thời điểm gọi xác nhận (Ser_CustomerCare72h.ConatctDate)
     public string? ContactNote { get; set; }      // ghi chú cuộc gọi (Ser_CustomerCare72h.Note)
     public string? ContactResult { get; set; }    // kết quả: Confirmed/NoAnswer/Rejected (CIFB/CINFB/REJ)
+    public string? RoId { get; set; }             // lệnh sửa chữa nguồn (Ser_App.ROID ↔ Ser_RO.ROID)
 }

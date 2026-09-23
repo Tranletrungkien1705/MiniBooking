@@ -226,6 +226,35 @@ app.MapDelete("/api/appointments/{code}/parts/{itemId:long}", async (string code
     return r is null ? Results.NotFound(new { code, itemId, error = "Không thấy phụ tùng của lịch hẹn." }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// ---- Lệnh sửa chữa / báo giá (Ser_RO): nguồn để đặt lịch hẹn + gắn RO ↔ lịch hẹn ----
+app.MapPost("/api/repair-orders", async (AddRepairOrderDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RoId)) return Results.BadRequest(new { error = "Cần RoId." });
+    try { return Results.Ok(await svc.AddRepairOrderAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/repair-orders", async (IBookingService svc, string? dealer, bool? linked) =>
+    Results.Ok(await svc.ListRepairOrdersAsync(dealer, linked))).RequireAuthorization();
+
+app.MapGet("/api/repair-orders/{roId}", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.GetRepairOrderAsync(roId);
+    return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_RO_UpdateAppId: gắn lệnh sửa chữa với lịch hẹn (đặt AppId cho RO, ROID cho lịch hẹn).
+app.MapPost("/api/repair-orders/{roId}/link", async (string roId, LinkRepairOrderDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.AppCode)) return Results.BadRequest(new { error = "Cần AppCode." });
+    try
+    {
+        var r = await svc.LinkRepairOrderAsync(roId, dto.AppCode);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa hoặc lịch hẹn." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {
@@ -310,3 +339,4 @@ app.Run();
 record RegisterOrgDto(string Name);
 record ImportEngineerDto(string? Code, string? Name, string? Skill, string? DealerCode, bool Active);
 record ImportApptDto(string? Code, string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType, DateTime? PreferredAt, string? DealerCode, string? Engineer, int Status, string? Note, string? RoNo);
+record LinkRepairOrderDto(string AppCode);

@@ -4,7 +4,7 @@ using MiniBooking.Models;
 
 namespace MiniBooking.Services;
 
-public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note, string? BayCode = null, string? AppTypeCode = null, DateTime? SlotTo = null);
+public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note, string? BayCode = null, string? AppTypeCode = null, DateTime? SlotTo = null, string? RoId = null);
 public record ConfirmDto(string? Engineer, string? BayCode = null, DateTime? SlotFrom = null, DateTime? SlotTo = null);
 public record ContactApptDto(string? Result, string? Note);   // Result: Confirmed/NoAnswer/Rejected
 public record CheckInDto(string? RoNo);
@@ -17,6 +17,7 @@ public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
 public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
 public record AddPartItemDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? InventoryQuantity, string? Note);
+public record AddRepairOrderDto(string RoId, string? RoNo, string? DealerCode, string? CusName, string? CusTel, string? PlateNo, string? FrameNo, string? CusRequest, string? Status);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
@@ -52,6 +53,10 @@ public interface IBookingService
     Task<object?> AddPartItemAsync(string code, AddPartItemDto dto);         // gán phụ tùng kèm lịch hẹn (Ser_AppPartItems)
     Task<object?> ListPartItemsAsync(string code);                           // danh sách phụ tùng của lịch hẹn
     Task<object?> RemovePartItemAsync(string code, long itemId);             // bỏ 1 phụ tùng khỏi lịch hẹn
+    Task<object> AddRepairOrderAsync(AddRepairOrderDto dto);                 // tạo/cập nhật lệnh sửa chữa (Ser_RO)
+    Task<object> ListRepairOrdersAsync(string? dealer, bool? linked);        // danh sách lệnh sửa chữa
+    Task<object?> GetRepairOrderAsync(string roId);                          // chi tiết 1 lệnh sửa chữa
+    Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -80,6 +85,18 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             if (!ok) throw new InvalidOperationException($"Loại cuộc hẹn '{appTypeCode}' không tồn tại hoặc đã ngừng dùng.");
         }
 
+        // SerAppCreateDL_InvalidROID / SerAppCreateDL_ROExistAppId: nếu đặt lịch từ 1 lệnh sửa chữa (ROID),
+        // RO phải tồn tại và chưa gắn cuộc hẹn nào (Ser_RO.AppId rỗng).
+        var roId = dto.RoId?.Trim().ToUpperInvariant();
+        RepairOrder? ro = null;
+        if (!string.IsNullOrWhiteSpace(roId))
+        {
+            ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+            if (ro is null) throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' không tồn tại.");
+            if (!string.IsNullOrWhiteSpace(ro.AppCode))
+                throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đã gắn cuộc hẹn {ro.AppCode}.");
+        }
+
         var bayCode = dto.BayCode?.Trim().ToUpperInvariant();
         if (!string.IsNullOrWhiteSpace(bayCode))
         {
@@ -100,12 +117,14 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             Vin = dto.Vin?.Trim().ToUpperInvariant(), Plate = dto.Plate?.Trim(),
             ServiceType = serviceType,
             PreferredAt = dto.PreferredAt, DealerCode = dto.DealerCode?.Trim() ?? "", Note = dto.Note,
-            BayCode = bayCode, AppTypeCode = appTypeCode,
+            BayCode = bayCode, AppTypeCode = appTypeCode, RoId = roId,
             Status = ApptStatus.Requested
         };
         db.Appointments.Add(a);
+        // Ser_RO_UpdateAppId: gắn ngược AppId vào lệnh sửa chữa nguồn.
+        if (ro is not null) { ro.AppCode = a.Code; ro.LinkedAt = DateTime.Now; }
         await db.SaveChangesAsync();
-        return new { a.Code, status = a.Status.ToString(), statusText = Text(a.Status), a.PreferredAt, a.BayCode, a.AppTypeCode };
+        return new { a.Code, status = a.Status.ToString(), statusText = Text(a.Status), a.PreferredAt, a.BayCode, a.AppTypeCode, a.RoId };
     }
 
     public async Task<object?> StatusAsync(string code)
@@ -576,5 +595,78 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         db.AppPartItems.Remove(item);
         await db.SaveChangesAsync();
         return new { a.Code, removed = itemId };
+    }
+
+    // ===== Lệnh sửa chữa / báo giá (Ser_RO) =====
+    // Tạo/cập nhật 1 lệnh sửa chữa; dedupe theo RoId. Dùng làm nguồn để đặt lịch hẹn (Ser_App.ROID).
+    public async Task<object> AddRepairOrderAsync(AddRepairOrderDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.RoId)) throw new InvalidOperationException("Cần RoId (mã lệnh sửa chữa).");
+        var roId = dto.RoId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null)
+        {
+            ro = new RepairOrder
+            {
+                OrgId = Org, RoId = roId,
+                RoNo = string.IsNullOrWhiteSpace(dto.RoNo) ? roId : dto.RoNo!.Trim(),
+                DealerCode = dto.DealerCode?.Trim() ?? "",
+                CusName = dto.CusName?.Trim() ?? "",
+                CusTel = dto.CusTel?.Trim(), PlateNo = dto.PlateNo?.Trim(), FrameNo = dto.FrameNo?.Trim(),
+                CusRequest = dto.CusRequest, Status = string.IsNullOrWhiteSpace(dto.Status) ? "Open" : dto.Status!.Trim()
+            };
+            db.RepairOrders.Add(ro);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(dto.RoNo)) ro.RoNo = dto.RoNo!.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.DealerCode)) ro.DealerCode = dto.DealerCode!.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.CusName)) ro.CusName = dto.CusName!.Trim();
+            if (dto.CusTel != null) ro.CusTel = dto.CusTel.Trim();
+            if (dto.PlateNo != null) ro.PlateNo = dto.PlateNo.Trim();
+            if (dto.FrameNo != null) ro.FrameNo = dto.FrameNo.Trim();
+            if (dto.CusRequest != null) ro.CusRequest = dto.CusRequest;
+            if (!string.IsNullOrWhiteSpace(dto.Status)) ro.Status = dto.Status!.Trim();
+        }
+        await db.SaveChangesAsync();
+        return new { ro.RoId, ro.RoNo, ro.DealerCode, ro.CusName, ro.PlateNo, ro.Status, ro.AppCode, ro.LinkedAt };
+    }
+
+    // Danh sách lệnh sửa chữa; linked=true → đã gắn cuộc hẹn, false → chưa gắn.
+    public async Task<object> ListRepairOrdersAsync(string? dealer, bool? linked)
+    {
+        var q = db.RepairOrders.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        if (linked.HasValue) q = linked.Value ? q.Where(x => x.AppCode != null) : q.Where(x => x.AppCode == null);
+        var items = await q.OrderBy(x => x.RoId).Take(500).Select(x => new
+        {
+            x.RoId, x.RoNo, x.DealerCode, x.CusName, x.CusTel, x.PlateNo, x.FrameNo, x.Status, x.AppCode, x.LinkedAt, x.CreatedAt
+        }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    public async Task<object?> GetRepairOrderAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        return new { ro.RoId, ro.RoNo, ro.DealerCode, ro.CusName, ro.CusTel, ro.PlateNo, ro.FrameNo, ro.CusRequest, ro.Status, ro.AppCode, ro.LinkedAt, ro.CreatedAt };
+    }
+
+    // Ser_RO_UpdateAppId: gắn 1 lệnh sửa chữa với 1 lịch hẹn (đặt AppId cho RO và ROID cho lịch hẹn).
+    public async Task<object?> LinkRepairOrderAsync(string roId, string appCode)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        appCode = appCode.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        var a = await db.Appointments.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == appCode);
+        if (a is null) return null;
+        if (!string.IsNullOrWhiteSpace(ro.AppCode) && ro.AppCode != appCode)
+            throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đã gắn cuộc hẹn {ro.AppCode}.");
+        ro.AppCode = a.Code; ro.LinkedAt = DateTime.Now;
+        a.RoId = ro.RoId;
+        await db.SaveChangesAsync();
+        return new { ro.RoId, ro.AppCode, appCode = a.Code, appRoId = a.RoId, ro.LinkedAt };
     }
 }

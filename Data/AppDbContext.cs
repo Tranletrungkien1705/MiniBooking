@@ -14,6 +14,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CavityType> CavityTypes => Set<CavityType>();
     public DbSet<AppServiceItem> AppServiceItems => Set<AppServiceItem>();
     public DbSet<AppPartItem> AppPartItems => Set<AppPartItem>();
+    public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -25,5 +26,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<CavityType>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<AppServiceItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.SerCode });
         b.Entity<AppPartItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.PartCode });
+        b.Entity<RepairOrder>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
     }
 }
