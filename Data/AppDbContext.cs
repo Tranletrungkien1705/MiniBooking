@@ -13,6 +13,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceBay> ServiceBays => Set<ServiceBay>();
     public DbSet<AppType> AppTypes => Set<AppType>();
     public DbSet<CavityType> CavityTypes => Set<CavityType>();
+    public DbSet<RepairGroup> RepairGroups => Set<RepairGroup>();
     public DbSet<CalendarDay> CalendarDays => Set<CalendarDay>();
     public DbSet<AppServiceItem> AppServiceItems => Set<AppServiceItem>();
     public DbSet<AppPartItem> AppPartItems => Set<AppPartItem>();
@@ -45,6 +46,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<ServiceBay>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<AppType>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<CavityType>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
+        b.Entity<RepairGroup>().HasIndex(x => new { x.OrgId, x.DealerCode, x.GroupRNo }).IsUnique();
         b.Entity<CalendarDay>().HasIndex(x => new { x.OrgId, x.CalendarType, x.Date }).IsUnique();
         b.Entity<AppServiceItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.SerCode });
         b.Entity<AppPartItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.PartCode });

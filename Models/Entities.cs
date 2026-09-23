@@ -205,6 +205,32 @@ public sealed class CavityType
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tổ kỹ thuật (chuyển đổi Ser_GroupRepair — "Quản lý tổ kỹ thuật"): master nhóm kỹ thuật viên theo xưởng,
+/// dùng để phân nhóm KTV khi phân công công việc. Mã tổ (GroupRNo) là duy nhất trong 1 đại lý (DealerCode).
+/// IsActive: 1 = đang dùng, 0 = ngừng dùng (TConst.Flag.Active/Inactive).</summary>
+public sealed class RepairGroup
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";   // DealerCode — đại lý
+    public string GroupRNo { get; set; } = "";     // GroupRNo — mã tổ kỹ thuật (unique theo Org+Dealer)
+    public string GroupRName { get; set; } = "";   // GroupRName — tên tổ kỹ thuật
+    public string? Note { get; set; }               // Note — mô tả
+    public bool IsActive { get; set; } = true;      // IsActive — 1 = đang dùng, 0 = ngừng dùng
+    public DateTime CreatedAt { get; set; } = DateTime.Now;      // CreatedDate
+    public string? CreatedBy { get; set; }          // CreatedBy
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;  // LogLUDateTime
+    public string? LogLUBy { get; set; }            // LogLUBy
+}
+
+/// <summary>Quy tắc tổ kỹ thuật (chuyển đổi Ser_GroupRepair): mã tổ + đại lý + tên tổ không được rỗng.</summary>
+public static class RepairGroupRules
+{
+    /// <summary>True nếu các trường bắt buộc (GroupRNo/DealerCode/GroupRName) đều có giá trị.</summary>
+    public static bool HasRequiredFields(string? groupRNo, string? dealerCode, string? groupRName) =>
+        !string.IsNullOrWhiteSpace(groupRNo) && !string.IsNullOrWhiteSpace(dealerCode) && !string.IsNullOrWhiteSpace(groupRName);
+}
+
 /// <summary>Lịch làm việc của xưởng (chuyển đổi Mst_Calendar): mỗi ngày trong năm có 1 StatusValue
 /// cho biết ngày đó có làm việc hay không, theo từng loại lịch (CalendarType).
 /// StatusValue = 0 → ngày làm việc; khác 0 → ngày nghỉ/lễ. Dùng để chặn đặt lịch vào ngày nghỉ.</summary>

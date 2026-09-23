@@ -18,6 +18,8 @@ public record AddEngineerDto(string Code, string Name, string? Skill, string? De
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
 public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
+// Ser_GroupRepair: tổ kỹ thuật (Quản lý tổ kỹ thuật) — tạo/cập nhật master nhóm KTV theo xưởng.
+public record SaveRepairGroupDto(string? GroupRNo, string? GroupRName, string? DealerCode, string? Note, bool? IsActive, string? ChangedBy);
 // Mst_Calendar_ResetYear: khởi tạo lịch làm việc cả năm theo StatusValue từng thứ (0 = làm việc).
 public record ResetCalendarYearDto(string? CalendarType, int Year, int? Monday, int? Tuesday, int? Wednesday, int? Thursday, int? Friday, int? Saturday, int? Sunday);
 // Mst_Calendar_UpdateStatusValue: đổi trạng thái làm việc/nghỉ của 1 ngày cụ thể.
@@ -125,6 +127,10 @@ public interface IBookingService
     Task<object> ListAppTypesAsync(bool? active);
     Task<object> AddCavityTypeAsync(AddCavityTypeDto dto);
     Task<object> ListCavityTypesAsync(bool? active);
+    Task<object> SaveRepairGroupAsync(SaveRepairGroupDto dto);                       // tạo/cập nhật tổ kỹ thuật (Ser_GroupRepair_Create/Update)
+    Task<object> ListRepairGroupsAsync(string? dealer, string? keyword, bool? active, int? recordStart, int? recordCount);  // tìm tổ kỹ thuật (Ser_GroupRepair_Get_DL)
+    Task<object?> GetRepairGroupAsync(long id);                                      // chi tiết 1 tổ kỹ thuật
+    Task<object?> DeleteRepairGroupAsync(long id);                                   // xóa tổ kỹ thuật (Ser_GroupRepair_Delete)
     Task<object> ResetCalendarYearAsync(ResetCalendarYearDto dto);            // khởi tạo lịch làm việc cả năm (Mst_Calendar_ResetYear)
     Task<object> ListCalendarDaysAsync(string? calendarType, int? year, string? from, string? to);  // danh sách ngày (Mst_Calendar_Get)
     Task<object?> UpdateCalendarDayAsync(UpdateCalendarDayDto dto);           // đổi trạng thái 1 ngày (Mst_Calendar_UpdateStatusValue)
@@ -759,6 +765,81 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         if (active.HasValue) q = q.Where(x => x.Active == active.Value);
         var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
         return new { count = items.Count, items };
+    }
+
+    // ===== Tổ kỹ thuật (Ser_GroupRepair — "Quản lý tổ kỹ thuật") =====
+    // Ser_GroupRepair_Create/Update: tạo/cập nhật master nhóm KTV theo xưởng.
+    // Validate: GroupRNo/DealerCode/GroupRName không rỗng (CheckGroupRFieldEmpty);
+    // mã tổ duy nhất trong 1 đại lý (CheckExistGroupRNo / CheckExistGroupRNoModify).
+    public async Task<object> SaveRepairGroupAsync(SaveRepairGroupDto dto)
+    {
+        var groupRNo = (dto.GroupRNo ?? "").Trim().ToUpperInvariant();
+        var dealerCode = (dto.DealerCode ?? "").Trim();
+        var groupRName = (dto.GroupRName ?? "").Trim();
+        if (!RepairGroupRules.HasRequiredFields(groupRNo, dealerCode, groupRName))
+            throw new InvalidOperationException("Cần GroupRNo, DealerCode và GroupRName.");
+
+        var now = DateTime.Now;
+        var g = await db.RepairGroups.FirstOrDefaultAsync(x => x.OrgId == Org && x.DealerCode == dealerCode && x.GroupRNo == groupRNo);
+        if (g is null)
+        {
+            g = new RepairGroup
+            {
+                OrgId = Org, DealerCode = dealerCode, GroupRNo = groupRNo, GroupRName = groupRName,
+                Note = dto.Note, IsActive = dto.IsActive ?? true,
+                CreatedAt = now, CreatedBy = dto.ChangedBy, LogLUDateTime = now, LogLUBy = dto.ChangedBy
+            };
+            db.RepairGroups.Add(g);
+        }
+        else
+        {
+            g.GroupRName = groupRName;
+            g.Note = dto.Note;
+            if (dto.IsActive.HasValue) g.IsActive = dto.IsActive.Value;
+            g.LogLUDateTime = now; g.LogLUBy = dto.ChangedBy;
+        }
+        await db.SaveChangesAsync();
+        return new { g.Id, g.DealerCode, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.CreatedAt, g.LogLUDateTime };
+    }
+
+    // Ser_GroupRepair_Get_DL: tìm tổ kỹ thuật (lọc đại lý + từ khóa mã/tên + cờ hiệu lực + phân trang).
+    public async Task<object> ListRepairGroupsAsync(string? dealer, string? keyword, bool? active, int? recordStart, int? recordCount)
+    {
+        var q = db.RepairGroups.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer!.Trim());
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            var kw = keyword!.Trim();
+            q = q.Where(x => x.GroupRNo.Contains(kw) || x.GroupRName.Contains(kw));
+        }
+        if (active.HasValue) q = q.Where(x => x.IsActive == active.Value);
+
+        var total = await q.CountAsync();
+        var start = Math.Max(0, recordStart ?? 0);
+        var count = recordCount is > 0 ? recordCount.Value : 50;
+        var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.GroupRNo)
+            .Skip(start).Take(count)
+            .Select(x => new { x.Id, x.DealerCode, x.GroupRNo, x.GroupRName, x.Note, x.IsActive, x.CreatedAt, x.LogLUDateTime })
+            .ToListAsync();
+        return new { total, recordStart = start, recordCount = count, count = items.Count, items };
+    }
+
+    // Chi tiết 1 tổ kỹ thuật theo Id.
+    public async Task<object?> GetRepairGroupAsync(long id)
+    {
+        var g = await db.RepairGroups.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (g is null) return null;
+        return new { g.Id, g.DealerCode, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.CreatedAt, g.CreatedBy, g.LogLUDateTime, g.LogLUBy };
+    }
+
+    // Ser_GroupRepair_Delete: xóa tổ kỹ thuật (chặn khi không thấy — CheckExistGroupR).
+    public async Task<object?> DeleteRepairGroupAsync(long id)
+    {
+        var g = await db.RepairGroups.FirstOrDefaultAsync(x => x.OrgId == Org && x.Id == id);
+        if (g is null) return null;
+        db.RepairGroups.Remove(g);
+        await db.SaveChangesAsync();
+        return new { g.Id, g.DealerCode, g.GroupRNo, g.GroupRName, deleted = true };
     }
 
     // ===== Lịch làm việc của xưởng (Mst_Calendar) =====

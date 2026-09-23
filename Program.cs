@@ -240,6 +240,31 @@ app.MapPost("/api/cavity-types", async (AddCavityTypeDto dto, IBookingService sv
 app.MapGet("/api/cavity-types", async (IBookingService svc, bool? active) =>
     Results.Ok(await svc.ListCavityTypesAsync(active))).RequireAuthorization();
 
+// ---- Tổ kỹ thuật (Ser_GroupRepair — "Quản lý tổ kỹ thuật"): master nhóm KTV theo xưởng ----
+// Ser_GroupRepair_Create/Update: tạo/cập nhật (validate GroupRNo/DealerCode/GroupRName + mã tổ duy nhất theo đại lý).
+app.MapPost("/api/repair-groups", async (SaveRepairGroupDto dto, IBookingService svc) =>
+{
+    try { return Results.Ok(await svc.SaveRepairGroupAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+// Ser_GroupRepair_Get_DL: tìm tổ kỹ thuật (đại lý + từ khóa mã/tên + cờ hiệu lực + phân trang).
+app.MapGet("/api/repair-groups", async (IBookingService svc, string? dealer, string? keyword, bool? active, int? recordStart, int? recordCount) =>
+    Results.Ok(await svc.ListRepairGroupsAsync(dealer, keyword, active, recordStart, recordCount))).RequireAuthorization();
+
+app.MapGet("/api/repair-groups/{id:long}", async (long id, IBookingService svc) =>
+{
+    var r = await svc.GetRepairGroupAsync(id);
+    return r is null ? Results.NotFound(new { id, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_GroupRepair_Delete: xóa tổ kỹ thuật.
+app.MapDelete("/api/repair-groups/{id:long}", async (long id, IBookingService svc) =>
+{
+    var r = await svc.DeleteRepairGroupAsync(id);
+    return r is null ? Results.NotFound(new { id, error = "Không thấy tổ kỹ thuật." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Lịch làm việc của xưởng (Mst_Calendar): ngày làm việc/nghỉ theo năm ----
 // Mst_Calendar_ResetYear: khởi tạo lịch cả năm theo StatusValue từng thứ (0 = làm việc).
 app.MapPost("/api/calendar-days/reset-year", async (ResetCalendarYearDto dto, IBookingService svc) =>
