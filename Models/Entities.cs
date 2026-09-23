@@ -8,8 +8,9 @@ public sealed class Org
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Vòng đời lịch hẹn dịch vụ (Ser_App): khách đặt → xác nhận → check-in (tạo RO) → hoàn tất.</summary>
-public enum ApptStatus { Requested = 0, Confirmed = 1, CheckedIn = 2, Done = 3, Cancelled = 4, NoShow = 5 }
+/// <summary>Vòng đời lịch hẹn dịch vụ (Ser_App): khách đặt → liên hệ xác nhận → xác nhận → check-in (tạo RO) → hoàn tất.
+/// Contacted = AppStatus=5 'Đã liên hệ &amp; Chưa xác nhận' (Ser_CustomerCare72h): tổng đài gọi xác nhận lịch trước giờ hẹn.</summary>
+public enum ApptStatus { Requested = 0, Confirmed = 1, CheckedIn = 2, Done = 3, Cancelled = 4, NoShow = 5, Contacted = 6 }
 
 /// <summary>Kỹ thuật viên (Ser_Engineer): roster + kỹ năng để phân lịch + đo tải.</summary>
 public sealed class Engineer
@@ -145,4 +146,7 @@ public sealed class Appointment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? CheckedInAt { get; set; }
     public DateTime? DoneAt { get; set; }
+    public DateTime? ContactedAt { get; set; }    // thời điểm gọi xác nhận (Ser_CustomerCare72h.ConatctDate)
+    public string? ContactNote { get; set; }      // ghi chú cuộc gọi (Ser_CustomerCare72h.Note)
+    public string? ContactResult { get; set; }    // kết quả: Confirmed/NoAnswer/Rejected (CIFB/CINFB/REJ)
 }

@@ -95,6 +95,17 @@ app.MapGet("/api/book/{code}", async (string code, IBookingService svc) =>
 app.MapGet("/api/appointments", async (IBookingService svc, string? status, string? dealer, string? date) =>
     Results.Ok(await svc.ListAsync(status, dealer, date))).RequireAuthorization();
 
+// Gọi xác nhận lịch trước giờ hẹn (Ser_CustomerCare72h): Requested → Contacted (AppStatus=5).
+app.MapPost("/api/appointments/{code}/contact", async (string code, ContactApptDto dto, IBookingService svc) =>
+{
+    var r = await svc.ContactAsync(code, dto);
+    return r is null ? Results.NotFound(new { code, error = "Không thấy lịch chờ liên hệ." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Danh sách lịch cần gọi xác nhận (còn Chờ xác nhận, giờ hẹn trong vòng N giờ tới).
+app.MapGet("/api/appointments/due-for-contact", async (IBookingService svc, int? withinHours) =>
+    Results.Ok(await svc.DueForContactAsync(withinHours ?? 24))).RequireAuthorization();
+
 app.MapPost("/api/appointments/{code}/confirm", async (string code, ConfirmDto dto, IBookingService svc) =>
 {
     try

@@ -6,6 +6,7 @@ namespace MiniBooking.Services;
 
 public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note, string? BayCode = null, string? AppTypeCode = null, DateTime? SlotTo = null);
 public record ConfirmDto(string? Engineer, string? BayCode = null, DateTime? SlotFrom = null, DateTime? SlotTo = null);
+public record ContactApptDto(string? Result, string? Note);   // Result: Confirmed/NoAnswer/Rejected
 public record CheckInDto(string? RoNo);
 public record CreateReminderDto(string CustomerName, string Phone, string? Vin, string? Plate, string? CareType, DateTime DueDate, string? Note);
 public record ContactDto(string? Note);
@@ -21,6 +22,8 @@ public interface IBookingService
     Task<object> BookAsync(BookDto dto);        // công khai (khách)
     Task<object?> StatusAsync(string code);     // công khai
     Task<object> ListAsync(string? status, string? dealer, string? date);
+    Task<object?> ContactAsync(string code, ContactApptDto dto);   // gọi xác nhận trước giờ hẹn (AppStatus=5)
+    Task<object> DueForContactAsync(int withinHours);              // danh sách lịch cần gọi xác nhận
     Task<object?> ConfirmAsync(string code, ConfirmDto dto);
     Task<object?> CheckInAsync(string code, string? roNo);
     Task<object?> DoneAsync(string code);
@@ -46,7 +49,7 @@ public interface IBookingService
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
 {
     private Guid Org => tenant.OrgId;
-    private static readonly (ApptStatus,string)[] Steps = { (ApptStatus.Requested,"Chờ xác nhận"),(ApptStatus.Confirmed,"Đã xác nhận"),(ApptStatus.CheckedIn,"Đã tiếp nhận"),(ApptStatus.Done,"Hoàn tất"),(ApptStatus.Cancelled,"Đã hủy"),(ApptStatus.NoShow,"Không đến") };
+    private static readonly (ApptStatus,string)[] Steps = { (ApptStatus.Requested,"Chờ xác nhận"),(ApptStatus.Contacted,"Đã liên hệ & Chưa xác nhận"),(ApptStatus.Confirmed,"Đã xác nhận"),(ApptStatus.CheckedIn,"Đã tiếp nhận"),(ApptStatus.Done,"Hoàn tất"),(ApptStatus.Cancelled,"Đã hủy"),(ApptStatus.NoShow,"Không đến") };
     private static string Text(ApptStatus s) => Steps.First(x => x.Item1 == s).Item2;
 
     public async Task<object> BookAsync(BookDto dto)
@@ -95,7 +98,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         code = code.Trim().ToUpperInvariant();
         var a = await db.Appointments.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Code == code);
         if (a is null) return null;
-        return new { a.Code, a.CustomerName, a.ServiceType, a.PreferredAt, status = a.Status.ToString(), statusText = Text(a.Status), a.Engineer, a.RoNo, a.BayCode, a.AppTypeCode };
+        return new { a.Code, a.CustomerName, a.ServiceType, a.PreferredAt, status = a.Status.ToString(), statusText = Text(a.Status), a.Engineer, a.RoNo, a.BayCode, a.AppTypeCode, a.ContactedAt, a.ContactResult };
     }
 
     public async Task<object> ListAsync(string? status, string? dealer, string? date)
@@ -107,7 +110,8 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         var items = await q.OrderBy(a => a.PreferredAt).Take(500).Select(a => new
         {
             a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
-            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status), a.RoNo, a.BayCode, a.AppTypeCode
+            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status), a.RoNo, a.BayCode, a.AppTypeCode,
+            a.ContactedAt, a.ContactResult, a.ContactNote
         }).ToListAsync();
         return new { count = items.Count, items };
     }
@@ -118,10 +122,43 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         return await db.Appointments.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
     }
 
-    public async Task<object?> ConfirmAsync(string code, ConfirmDto dto)
+    // Gọi xác nhận lịch trước giờ hẹn (Ser_CustomerCare72h): Requested → Contacted (AppStatus=5).
+    // Kết quả cuộc gọi: Confirmed (CIFB) / NoAnswer (CINFB) / Rejected (REJ).
+    public async Task<object?> ContactAsync(string code, ContactApptDto dto)
     {
         var a = await Get(code);
         if (a is null || a.Status != ApptStatus.Requested) return null;
+        var result = string.IsNullOrWhiteSpace(dto.Result) ? "NoAnswer" : dto.Result!.Trim();
+        a.Status = ApptStatus.Contacted;
+        a.ContactedAt = DateTime.Now;
+        a.ContactResult = result;
+        if (!string.IsNullOrWhiteSpace(dto.Note)) a.ContactNote = dto.Note;
+        await db.SaveChangesAsync();
+        return new { a.Code, status = a.Status.ToString(), statusText = Text(a.Status), a.ContactedAt, a.ContactResult, a.ContactNote };
+    }
+
+    // Danh sách lịch cần gọi xác nhận: còn ở trạng thái Chờ xác nhận và giờ hẹn trong vòng N giờ tới.
+    public async Task<object> DueForContactAsync(int withinHours)
+    {
+        if (withinHours <= 0) withinHours = 24;
+        var now = DateTime.Now;
+        var until = now.AddHours(withinHours);
+        var items = await db.Appointments
+            .Where(a => a.OrgId == Org && a.Status == ApptStatus.Requested
+                && a.PreferredAt >= now && a.PreferredAt <= until)
+            .OrderBy(a => a.PreferredAt)
+            .Select(a => new
+            {
+                a.Code, a.CustomerName, a.Phone, a.Plate, a.ServiceType, a.PreferredAt,
+                a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status)
+            }).ToListAsync();
+        return new { withinHours, from = now, to = until, count = items.Count, items };
+    }
+
+    public async Task<object?> ConfirmAsync(string code, ConfirmDto dto)
+    {
+        var a = await Get(code);
+        if (a is null || a.Status is not (ApptStatus.Requested or ApptStatus.Contacted)) return null;
 
         // Gán khoang + khung giờ khi xác nhận (Ser_App: AppDateTimeFrom/AppTimeFrom → AppDateTime/AppTime).
         var bayCode = (dto.BayCode ?? a.BayCode)?.Trim().ToUpperInvariant();
@@ -144,6 +181,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
 
         a.Status = ApptStatus.Confirmed; a.Engineer = dto.Engineer;
         a.BayCode = bayCode; a.SlotFrom = slotFrom; a.SlotTo = slotTo;
+        a.ContactResult = "Confirmed";   // xác nhận qua gọi điện (Ser_CustomerCare72h CIFB)
         await db.SaveChangesAsync();
         return new { a.Code, status = a.Status.ToString(), a.Engineer, a.BayCode, a.SlotFrom, a.SlotTo };
     }
@@ -166,7 +204,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     public async Task<object?> CheckInAsync(string code, string? roNo)
     {
         var a = await Get(code);
-        if (a is null || a.Status is not (ApptStatus.Confirmed or ApptStatus.Requested)) return null;
+        if (a is null || a.Status is not (ApptStatus.Confirmed or ApptStatus.Requested or ApptStatus.Contacted)) return null;
         a.Status = ApptStatus.CheckedIn; a.CheckedInAt = DateTime.Now;
         a.RoNo = string.IsNullOrWhiteSpace(roNo) ? "RO" + DateTime.Now.ToString("yyMMddHHmmss") : roNo!.Trim();
         await db.SaveChangesAsync();
@@ -214,6 +252,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         {
             total = await q.CountAsync(),
             requested = byStatus.FirstOrDefault(x => x.s == ApptStatus.Requested)?.c ?? 0,
+            contacted = byStatus.FirstOrDefault(x => x.s == ApptStatus.Contacted)?.c ?? 0,
             confirmed = byStatus.FirstOrDefault(x => x.s == ApptStatus.Confirmed)?.c ?? 0,
             checkedIn = byStatus.FirstOrDefault(x => x.s == ApptStatus.CheckedIn)?.c ?? 0,
             done = byStatus.FirstOrDefault(x => x.s == ApptStatus.Done)?.c ?? 0,
