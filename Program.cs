@@ -202,6 +202,30 @@ app.MapDelete("/api/appointments/{code}/services/{itemId:long}", async (string c
     return r is null ? Results.NotFound(new { code, itemId, error = "Không thấy dịch vụ của lịch hẹn." }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// ---- Phụ tùng đăng ký kèm lịch hẹn (Ser_AppPartItems): phụ tùng + số lượng + tồn kho ----
+app.MapPost("/api/appointments/{code}/parts", async (string code, AddPartItemDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Cần PartCode." });
+    try
+    {
+        var r = await svc.AddPartItemAsync(code, dto);
+        return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/appointments/{code}/parts", async (string code, IBookingService svc) =>
+{
+    var r = await svc.ListPartItemsAsync(code);
+    return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapDelete("/api/appointments/{code}/parts/{itemId:long}", async (string code, long itemId, IBookingService svc) =>
+{
+    var r = await svc.RemovePartItemAsync(code, itemId);
+    return r is null ? Results.NotFound(new { code, itemId, error = "Không thấy phụ tùng của lịch hẹn." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {

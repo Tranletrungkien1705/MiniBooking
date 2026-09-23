@@ -136,6 +136,22 @@ public sealed class AppServiceItem
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phụ tùng đăng ký kèm lịch hẹn (chuyển đổi Ser_AppPartItems): danh sách phụ tùng
+/// khách dự kiến cần khi đặt lịch, kèm số lượng + tồn kho để chuẩn bị trước.</summary>
+public sealed class AppPartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppCode { get; set; } = "";     // mã lịch hẹn (Ser_App.Code)
+    public string PartCode { get; set; } = "";    // mã phụ tùng (Mst_Part.PartCode)
+    public string PartName { get; set; } = "";    // tên phụ tùng (VieName)
+    public string Unit { get; set; } = "";        // đơn vị tính
+    public decimal Quantity { get; set; }          // số lượng cần
+    public decimal InventoryQuantity { get; set; } // tồn kho tại thời điểm đăng ký
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

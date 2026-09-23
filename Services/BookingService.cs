@@ -16,6 +16,7 @@ public record AddBayDto(string Code, string Name, string? BayType, int? Capacity
 public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
 public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
+public record AddPartItemDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? InventoryQuantity, string? Note);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
@@ -48,6 +49,9 @@ public interface IBookingService
     Task<object?> AddServiceItemAsync(string code, AddServiceItemDto dto);   // gán dịch vụ kèm lịch hẹn (Ser_AppServiceItems)
     Task<object?> ListServiceItemsAsync(string code);                        // danh sách dịch vụ của lịch hẹn
     Task<object?> RemoveServiceItemAsync(string code, long itemId);          // bỏ 1 dịch vụ khỏi lịch hẹn
+    Task<object?> AddPartItemAsync(string code, AddPartItemDto dto);         // gán phụ tùng kèm lịch hẹn (Ser_AppPartItems)
+    Task<object?> ListPartItemsAsync(string code);                           // danh sách phụ tùng của lịch hẹn
+    Task<object?> RemovePartItemAsync(string code, long itemId);             // bỏ 1 phụ tùng khỏi lịch hẹn
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -509,6 +513,67 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         var item = await db.AppServiceItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.AppCode == a.Code && x.Id == itemId);
         if (item is null) return null;
         db.AppServiceItems.Remove(item);
+        await db.SaveChangesAsync();
+        return new { a.Code, removed = itemId };
+    }
+
+    // ===== Phụ tùng đăng ký kèm lịch hẹn (Ser_AppPartItems) =====
+    // Gán 1 phụ tùng (PartCode/PartName/Unit/Quantity) vào lịch hẹn; dedupe theo PartCode.
+    public async Task<object?> AddPartItemAsync(string code, AddPartItemDto dto)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        if (string.IsNullOrWhiteSpace(dto.PartCode)) throw new InvalidOperationException("Cần PartCode (mã phụ tùng).");
+        var partCode = dto.PartCode.Trim().ToUpperInvariant();
+        var item = await db.AppPartItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.AppCode == a.Code && x.PartCode == partCode);
+        if (item is null)
+        {
+            item = new AppPartItem
+            {
+                OrgId = Org, AppCode = a.Code, PartCode = partCode,
+                PartName = string.IsNullOrWhiteSpace(dto.PartName) ? partCode : dto.PartName!.Trim(),
+                Unit = dto.Unit?.Trim() ?? "",
+                Quantity = dto.Quantity is > 0 ? dto.Quantity!.Value : 0m,
+                InventoryQuantity = dto.InventoryQuantity is > 0 ? dto.InventoryQuantity!.Value : 0m,
+                Note = dto.Note
+            };
+            db.AppPartItems.Add(item);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(dto.PartName)) item.PartName = dto.PartName!.Trim();
+            if (!string.IsNullOrWhiteSpace(dto.Unit)) item.Unit = dto.Unit!.Trim();
+            if (dto.Quantity is > 0) item.Quantity = dto.Quantity!.Value;
+            if (dto.InventoryQuantity is > 0) item.InventoryQuantity = dto.InventoryQuantity!.Value;
+            if (dto.Note != null) item.Note = dto.Note;
+        }
+        await db.SaveChangesAsync();
+        return new { item.Id, item.AppCode, item.PartCode, item.PartName, item.Unit, item.Quantity, item.InventoryQuantity, item.Note };
+    }
+
+    // Danh sách phụ tùng của 1 lịch hẹn + cờ thiếu tồn (Quantity > InventoryQuantity) để chuẩn bị trước.
+    public async Task<object?> ListPartItemsAsync(string code)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        var items = await db.AppPartItems.Where(x => x.OrgId == Org && x.AppCode == a.Code)
+            .OrderBy(x => x.PartCode)
+            .Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.Quantity, x.InventoryQuantity, x.Note }).ToListAsync();
+        var rows = items.Select(x => new
+        {
+            x.Id, x.PartCode, x.PartName, x.Unit, x.Quantity, x.InventoryQuantity, x.Note,
+            shortage = x.Quantity > x.InventoryQuantity
+        });
+        return new { a.Code, count = items.Count, totalQuantity = items.Sum(x => x.Quantity), items = rows };
+    }
+
+    public async Task<object?> RemovePartItemAsync(string code, long itemId)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        var item = await db.AppPartItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.AppCode == a.Code && x.Id == itemId);
+        if (item is null) return null;
+        db.AppPartItems.Remove(item);
         await db.SaveChangesAsync();
         return new { a.Code, removed = itemId };
     }
