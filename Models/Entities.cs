@@ -170,6 +170,109 @@ public sealed class RepairOrder
     public string? AppCode { get; set; }           // AppId — cuộc hẹn đã gắn (Ser_RO.AppId)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? LinkedAt { get; set; }        // thời điểm gắn cuộc hẹn
+    public DateTime? StatusChangedAt { get; set; } // LogLUDateTime — lần đổi trạng thái gần nhất
+}
+
+/// <summary>Vòng đời lệnh sửa chữa (chuyển đổi Ser_RO_Stage): máy trạng thái 12 bước của Ser_RO.
+/// CRE (lập báo giá) → PRT (in báo giá) → W4P (đợi phụ tùng) → HPA (có phụ tùng) → HRO (lập lệnh SC)
+/// → INGA (vào xưởng) → RPRD (sửa xong) → CEND (kiểm tra cuối) → PAID (đã thanh toán) → FNS (hoàn tất).
+/// Nhánh hủy: REJ (từ chối/hủy) và NORE (không liên lạc được).</summary>
+public static class RoStages
+{
+    public const string Create        = "CRE";   // Lập báo giá
+    public const string Print         = "PRT";   // In báo giá
+    public const string Wait4Part     = "W4P";   // Đợi phụ tùng
+    public const string HasPart       = "HPA";   // Đã có phụ tùng
+    public const string HasRO         = "HRO";   // Lập lệnh sửa chữa
+    public const string RejectRO      = "REJ";   // Hủy / từ chối
+    public const string InGarage      = "INGA";  // Vào sửa chữa
+    public const string Repaired      = "RPRD";  // Sửa xong
+    public const string CheckEnd      = "CEND";  // Kiểm tra cuối cùng
+    public const string Paid          = "PAID";  // Đã thanh toán
+    public const string Finished      = "FNS";   // Đã hoàn thành
+    public const string NotResponding = "NORE";  // Không liên lạc được
+
+    /// <summary>Thứ tự hiển thị/tra cứu của các trạng thái.</summary>
+    public static readonly string[] All =
+        { Create, Print, Wait4Part, HasPart, HasRO, InGarage, Repaired, CheckEnd, Paid, Finished, RejectRO, NotResponding };
+
+    /// <summary>Tên hiển thị tiếng Việt của trạng thái (theo Ser_RO_Stage).</summary>
+    public static string Text(string? code) => (code ?? "").Trim().ToUpperInvariant() switch
+    {
+        Create        => "Lập báo giá",
+        Print         => "In báo giá",
+        Wait4Part     => "Đợi phụ tùng",
+        HasPart       => "Đã có phụ tùng",
+        HasRO         => "Lập lệnh sửa chữa",
+        RejectRO      => "Hủy / từ chối",
+        InGarage      => "Vào sửa chữa",
+        Repaired      => "Sửa xong",
+        CheckEnd      => "Kiểm tra cuối cùng",
+        Paid          => "Đã thanh toán",
+        Finished      => "Đã hoàn thành",
+        NotResponding => "Không liên lạc được",
+        _             => code ?? ""
+    };
+
+    /// <summary>Nhóm tìm kiếm (Ser_RO_Stage4Search): Chờ sửa / Đang sửa / Sửa xong / Đã giao xe / Hủy-hẹn lại.</summary>
+    public static string Group(string? code) => (code ?? "").Trim().ToUpperInvariant() switch
+    {
+        Create or Print or HasRO => "Chờ sửa",
+        InGarage                 => "Đang sửa",
+        Repaired or Paid         => "Sửa xong",
+        Finished                 => "Đã giao xe",
+        Wait4Part or HasPart or NotResponding => "Hủy, hẹn lại",
+        RejectRO                 => "Hủy",
+        _                        => ""
+    };
+
+    /// <summary>Các trạng thái nguồn hợp lệ để chuyển sang <paramref name="to"/> (theo quy tắc Ser_RO_Stage).
+    /// Trả về mảng rỗng nếu không có chuyển đổi nào định nghĩa cho đích đến.</summary>
+    public static string[] AllowedFrom(string? to) => (to ?? "").Trim().ToUpperInvariant() switch
+    {
+        Print         => new[] { Create },
+        Wait4Part     => new[] { Create, NotResponding },
+        HasPart       => new[] { Wait4Part },
+        HasRO         => new[] { Print, HasPart },
+        InGarage      => new[] { HasRO },
+        Repaired      => new[] { InGarage },
+        CheckEnd      => new[] { Repaired },
+        Paid          => new[] { CheckEnd },
+        Finished      => new[] { Paid },
+        RejectRO      => new[] { Create, Print, HasRO },
+        NotResponding => new[] { Create, Print },
+        _             => Array.Empty<string>()
+    };
+
+    /// <summary>True nếu chuyển từ <paramref name="from"/> sang <paramref name="to"/> hợp lệ.</summary>
+    public static bool CanTransition(string? from, string? to)
+    {
+        var f = (from ?? "").Trim().ToUpperInvariant();
+        var t = (to ?? "").Trim().ToUpperInvariant();
+        if (f.Length == 0 || t.Length == 0) return false;
+        return AllowedFrom(t).Contains(f);
+    }
+
+    /// <summary>Chỉ được xóa RO khi trạng thái là CRE/PRT/REJ/NORE (quy tắc xóa Ser_RO).</summary>
+    public static bool CanDelete(string? code)
+    {
+        var c = (code ?? "").Trim().ToUpperInvariant();
+        return c is Create or Print or RejectRO or NotResponding;
+    }
+}
+
+/// <summary>Lịch sử đổi trạng thái lệnh sửa chữa (chuyển đổi Ser_ROHistory): ghi lại mỗi lần chuyển
+/// trạng thái của Ser_RO để trace/audit vòng đời RO.</summary>
+public sealed class RepairOrderStatusHistory
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID — lệnh sửa chữa
+    public string? FromStatus { get; set; }         // trạng thái trước
+    public string ToStatus { get; set; } = "";     // trạng thái sau
+    public string? Note { get; set; }               // ghi chú
+    public string? ChangedBy { get; set; }          // người đổi (LogLUBy)
+    public DateTime ChangedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Chăm sóc KH sau dịch vụ 72h (chuyển đổi Ser_CustomerCare72h): khảo sát hài lòng sau khi giao xe.

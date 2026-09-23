@@ -273,6 +273,26 @@ app.MapPost("/api/repair-orders/{roId}/link", async (string roId, LinkRepairOrde
     catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
 }).RequireAuthorization();
 
+// Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage
+// (CRE→PRT→W4P→HPA→HRO→INGA→RPRD→CEND→PAID→FNS; nhánh REJ/NORE).
+app.MapPost("/api/repair-orders/{roId}/status", async (string roId, ChangeRoStatusDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ToStatus)) return Results.BadRequest(new { error = "Cần ToStatus." });
+    try
+    {
+        var r = await svc.ChangeRepairOrderStatusAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
+// Lịch sử đổi trạng thái lệnh sửa chữa (Ser_ROHistory).
+app.MapGet("/api/repair-orders/{roId}/status-history", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.GetRepairOrderStatusHistoryAsync(roId);
+    return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {

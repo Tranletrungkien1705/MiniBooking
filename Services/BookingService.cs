@@ -18,6 +18,8 @@ public record AddCavityTypeDto(string Code, string Name);
 public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
 public record AddPartItemDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? InventoryQuantity, string? Note);
 public record AddRepairOrderDto(string RoId, string? RoNo, string? DealerCode, string? CusName, string? CusTel, string? PlateNo, string? FrameNo, string? CusRequest, string? Status);
+// Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage.
+public record ChangeRoStatusDto(string ToStatus, string? Note, string? ChangedBy);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
@@ -81,6 +83,8 @@ public interface IBookingService
     Task<object> ListRepairOrdersAsync(string? dealer, bool? linked);        // danh sách lệnh sửa chữa
     Task<object?> GetRepairOrderAsync(string roId);                          // chi tiết 1 lệnh sửa chữa
     Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
+    Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto);  // chuyển trạng thái RO (Ser_RO_UpdateStatus)
+    Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
     Task<object> CreatePostCareAsync(CreatePostCareDto dto);                 // tạo phiếu chăm sóc sau dịch vụ 72h (Ser_CustomerCare72h)
     Task<object> ListPostCaresAsync(string? status, string? dealer, string? dueBefore);  // danh sách phiếu chăm sóc 72h
     Task<object?> GetPostCareAsync(string cusCareId);                        // chi tiết 1 phiếu chăm sóc 72h
@@ -660,7 +664,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
                 DealerCode = dto.DealerCode?.Trim() ?? "",
                 CusName = dto.CusName?.Trim() ?? "",
                 CusTel = dto.CusTel?.Trim(), PlateNo = dto.PlateNo?.Trim(), FrameNo = dto.FrameNo?.Trim(),
-                CusRequest = dto.CusRequest, Status = string.IsNullOrWhiteSpace(dto.Status) ? "Open" : dto.Status!.Trim()
+                CusRequest = dto.CusRequest, Status = string.IsNullOrWhiteSpace(dto.Status) ? RoStages.Create : dto.Status!.Trim().ToUpperInvariant()
             };
             db.RepairOrders.Add(ro);
         }
@@ -676,7 +680,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             if (!string.IsNullOrWhiteSpace(dto.Status)) ro.Status = dto.Status!.Trim();
         }
         await db.SaveChangesAsync();
-        return new { ro.RoId, ro.RoNo, ro.DealerCode, ro.CusName, ro.PlateNo, ro.Status, ro.AppCode, ro.LinkedAt };
+        return new { ro.RoId, ro.RoNo, ro.DealerCode, ro.CusName, ro.PlateNo, ro.Status, statusText = RoStages.Text(ro.Status), group = RoStages.Group(ro.Status), ro.AppCode, ro.LinkedAt };
     }
 
     // Danh sách lệnh sửa chữa; linked=true → đã gắn cuộc hẹn, false → chưa gắn.
@@ -715,6 +719,58 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         a.RoId = ro.RoId;
         await db.SaveChangesAsync();
         return new { ro.RoId, ro.AppCode, appCode = a.Code, appRoId = a.RoId, ro.LinkedAt };
+    }
+
+    // Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage.
+    // Chỉ cho phép các chuyển đổi hợp lệ (CRE→PRT→W4P→HPA→HRO→INGA→RPRD→CEND→PAID→FNS; nhánh REJ/NORE).
+    public async Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var to = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+        if (to.Length == 0) throw new InvalidOperationException("Cần ToStatus (trạng thái đích).");
+        if (!RoStages.All.Contains(to))
+            throw new InvalidOperationException($"Trạng thái '{to}' không hợp lệ. Hợp lệ: {string.Join('/', RoStages.All)}.");
+
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        var from = (ro.Status ?? "").Trim().ToUpperInvariant();
+        if (from == to)
+            throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đã ở trạng thái {to} ({RoStages.Text(to)}).");
+        if (!RoStages.CanTransition(from, to))
+        {
+            var allowed = RoStages.AllowedFrom(to);
+            var allowedText = allowed.Length == 0 ? "(không có)" : string.Join('/', allowed);
+            throw new InvalidOperationException(
+                $"Không thể chuyển '{roId}' từ {from} ({RoStages.Text(from)}) sang {to} ({RoStages.Text(to)}). Trạng thái nguồn hợp lệ: {allowedText}.");
+        }
+
+        ro.Status = to;
+        ro.StatusChangedAt = DateTime.Now;
+        db.RepairOrderStatusHistories.Add(new RepairOrderStatusHistory
+        {
+            OrgId = Org, RoId = ro.RoId, FromStatus = from, ToStatus = to,
+            Note = dto.Note, ChangedBy = dto.ChangedBy, ChangedAt = DateTime.Now
+        });
+        await db.SaveChangesAsync();
+        return new { ro.RoId, fromStatus = from, status = ro.Status, statusText = RoStages.Text(ro.Status), group = RoStages.Group(ro.Status), ro.StatusChangedAt };
+    }
+
+    // Lịch sử đổi trạng thái của 1 lệnh sửa chữa (Ser_ROHistory).
+    public async Task<object?> GetRepairOrderStatusHistoryAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        var items = await db.RepairOrderStatusHistories.Where(x => x.OrgId == Org && x.RoId == roId)
+            .OrderBy(x => x.ChangedAt)
+            .Select(x => new { x.Id, x.FromStatus, x.ToStatus, x.Note, x.ChangedBy, x.ChangedAt }).ToListAsync();
+        var rows = items.Select(x => new
+        {
+            x.Id, x.FromStatus, x.ToStatus, x.Note, x.ChangedBy, x.ChangedAt,
+            toStatusText = RoStages.Text(x.ToStatus)
+        });
+        return new { ro.RoId, status = ro.Status, statusText = RoStages.Text(ro.Status), count = items.Count, items = rows };
     }
 
     // ===== Chăm sóc KH sau dịch vụ 72h (Ser_CustomerCare72h) =====
