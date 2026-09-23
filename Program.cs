@@ -374,6 +374,12 @@ app.MapGet("/api/repair-orders/{roId}/planned-delivery-date", async (string roId
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// Ser_RO_Sumary_DL: thống kê lệnh sửa chữa theo ngày (lọc đại lý '|', khoảng ngày CheckInDate, trạng thái '|')
+// + doanh thu mỗi RO = Σ phụ tùng + Σ công việc (Price*Qty*Factor*(1+VAT/100)).
+app.MapGet("/api/repair-orders/summary", async (IBookingService svc, string? dealerCodes, string? fromDate, string? toDate, string? statuses) =>
+    Results.Ok(await svc.SummarizeRepairOrdersAsync(new RoSummaryDto(dealerCodes, fromDate, toDate, statuses)))
+).RequireAuthorization();
+
 // Ser_RO_GetForSerAppDL: lấy dữ liệu lệnh sửa chữa để tạo lịch hẹn (header RO + công việc + phụ tùng cần).
 app.MapGet("/api/repair-orders/{roId}/for-appointment", async (string roId, IBookingService svc) =>
 {

@@ -37,6 +37,8 @@ public record ChangeRoStatusDto(string ToStatus, string? Note, string? ChangedBy
 public record RejectRepairOrderDto(string RejectDate, string RejectNote, string? ChangedBy);
 // Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của lệnh sửa chữa (kèm lý do).
 public record UpdatePlannedDeliveryDateDto(string PlanedDeliveryDate, string? Remark, string? ChangedBy);
+// Ser_RO_Sumary_DL: thống kê lệnh sửa chữa theo ngày (lọc đại lý '|', khoảng ngày CheckInDate, trạng thái '|').
+public record RoSummaryDto(string? DealerCodes, string? FromDate, string? ToDate, string? Statuses);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
@@ -136,6 +138,7 @@ public interface IBookingService
     Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
     Task<object?> UpdatePlannedDeliveryDateAsync(string roId, UpdatePlannedDeliveryDateDto dto);  // lưu ngày giao xe dự kiến (Ser_RO_UpdatePlanedDeliveryDateDL)
     Task<object?> GetPlannedDeliveryDateHistoryAsync(string roId);           // lịch sử ngày giao xe dự kiến (Ser_Ro_PlanedDeliveryDate_His)
+    Task<object> SummarizeRepairOrdersAsync(RoSummaryDto dto);               // thống kê lệnh sửa chữa theo ngày + doanh thu (Ser_RO_Sumary_DL)
     Task<object?> GetRepairOrderForAppointmentAsync(string roId);            // dữ liệu RO để tạo lịch hẹn (Ser_RO_GetForSerAppDL)
     Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto);       // thêm dòng công việc vào RO (Ser_ROServiceItems)
     Task<object?> ListRoServiceItemsAsync(string roId);                              // danh sách công việc của RO + tổng tiền
@@ -2705,5 +2708,63 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             .OrderBy(m => m.Km).FirstOrDefaultAsync();
         if (next is null) return null;
         return new { currentKm = km, nextKm = next.Km, next.RomsId, next.Maintances, remainingKm = next.Km - km };
+    }
+
+    // ===== Thống kê lệnh sửa chữa theo ngày (Ser_RO_Sumary_DL) =====
+    // Lọc theo đại lý ('|'), khoảng ngày CheckInDate (FromDate..ToDate) và trạng thái ('|').
+    // Doanh thu mỗi RO = Σ phụ tùng (Price*Quantity*Factor*(1+VAT/100)) + Σ công việc (Price*Factor*(1+VAT/100)).
+    // Trả kèm tên nhóm trạng thái (Chờ sửa/Đang sửa/Sửa xong/Đã giao xe/Hủy, hẹn lại/Lệnh hủy).
+    public async Task<object> SummarizeRepairOrdersAsync(RoSummaryDto dto)
+    {
+        var dealerCodes = SplitList(dto.DealerCodes);
+        var statuses = SplitList(dto.Statuses);
+        DateTime? from = DateTime.TryParse(dto.FromDate, out var f) ? f.Date : null;
+        DateTime? to = DateTime.TryParse(dto.ToDate, out var t) ? t.Date : null;
+
+        var q = db.RepairOrders.Where(x => x.OrgId == Org);
+        if (dealerCodes.Length > 0) q = q.Where(x => dealerCodes.Contains(x.DealerCode));
+        if (statuses.Length > 0) q = q.Where(x => statuses.Contains(x.Status));
+        if (from.HasValue) q = q.Where(x => x.CheckInDate != null && x.CheckInDate >= from.Value);
+        if (to.HasValue) q = q.Where(x => x.CheckInDate != null && x.CheckInDate <= to.Value.AddDays(1).AddTicks(-1));
+
+        var ros = await q.OrderBy(x => x.CheckInDate).ThenBy(x => x.RoId).Take(2000)
+            .Select(x => new { x.RoId, x.RoNo, x.PlateNo, x.CusRequest, x.CheckInDate, x.Status, x.DealerCode })
+            .ToListAsync();
+        var roIds = ros.Select(x => x.RoId).ToList();
+
+        // Tổng tiền công việc (Ser_ROServiceItems) và phụ tùng (Ser_ROPartItems) theo ROID.
+        var svcTotals = await db.RepairOrderServiceItems.Where(x => x.OrgId == Org && roIds.Contains(x.RoId))
+            .GroupBy(x => x.RoId)
+            .Select(g => new { RoId = g.Key, Total = g.Sum(x => x.Price * x.Factor * (1 + x.VAT / 100m)) })
+            .ToListAsync();
+        var partTotals = await db.RepairOrderPartItems.Where(x => x.OrgId == Org && roIds.Contains(x.RoId))
+            .GroupBy(x => x.RoId)
+            .Select(g => new { RoId = g.Key, Total = g.Sum(x => x.Price * x.Quantity * x.Factor * (1 + x.VAT / 100m)) })
+            .ToListAsync();
+        var svcByRo = svcTotals.ToDictionary(x => x.RoId, x => x.Total);
+        var partByRo = partTotals.ToDictionary(x => x.RoId, x => x.Total);
+
+        var items = ros.Select(x =>
+        {
+            var svc = svcByRo.TryGetValue(x.RoId, out var s) ? s : 0m;
+            var part = partByRo.TryGetValue(x.RoId, out var p) ? p : 0m;
+            return new
+            {
+                x.RoId, x.RoNo, x.PlateNo, x.CusRequest, x.CheckInDate, x.DealerCode,
+                status = x.Status, statusText = RoStages.Text(x.Status), group = RoStages.Group(x.Status),
+                serviceAmount = Math.Round(svc, 2), partAmount = Math.Round(part, 2), revenue = Math.Round(svc + part, 2)
+            };
+        }).ToList();
+
+        return new
+        {
+            fromDate = from?.ToString("yyyy-MM-dd"), toDate = to?.ToString("yyyy-MM-dd"),
+            count = items.Count,
+            totalRevenue = Math.Round(items.Sum(x => x.revenue), 2),
+            totalServiceAmount = Math.Round(items.Sum(x => x.serviceAmount), 2),
+            totalPartAmount = Math.Round(items.Sum(x => x.partAmount), 2),
+            byGroup = items.GroupBy(x => x.group).Select(g => new { group = g.Key, count = g.Count(), revenue = Math.Round(g.Sum(x => x.revenue), 2) }),
+            items
+        };
     }
 }

@@ -18,6 +18,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AppPartItem> AppPartItems => Set<AppPartItem>();
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
     public DbSet<RepairOrderServiceItem> RepairOrderServiceItems => Set<RepairOrderServiceItem>();
+    public DbSet<RepairOrderPartItem> RepairOrderPartItems => Set<RepairOrderPartItem>();
     public DbSet<RepairOrderStatusHistory> RepairOrderStatusHistories => Set<RepairOrderStatusHistory>();
     public DbSet<RepairOrderDeliveryPlan> RepairOrderDeliveryPlans => Set<RepairOrderDeliveryPlan>();
     public DbSet<PostServiceCare> PostServiceCares => Set<PostServiceCare>();
@@ -48,6 +49,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<AppPartItem>().HasIndex(x => new { x.OrgId, x.AppCode, x.PartCode });
         b.Entity<RepairOrder>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
         b.Entity<RepairOrderServiceItem>().HasIndex(x => new { x.OrgId, x.RoId, x.SerCode });
+        b.Entity<RepairOrderPartItem>().HasIndex(x => new { x.OrgId, x.RoId, x.PartCode });
         b.Entity<RepairOrderStatusHistory>().HasIndex(x => new { x.OrgId, x.RoId, x.ChangedAt });
         b.Entity<RepairOrderDeliveryPlan>().HasIndex(x => new { x.OrgId, x.RoId, x.FlagCurrent });
         b.Entity<PostServiceCare>().HasIndex(x => new { x.OrgId, x.CusCareId }).IsUnique();
