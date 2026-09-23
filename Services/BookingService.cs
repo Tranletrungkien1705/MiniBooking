@@ -61,6 +61,15 @@ public record CreateServicePackageDto(string? PackageNo, string? PackageName, st
     string? Creator, bool? IsPublicFlag, bool? IsUserBasePrice, List<PackageServiceItemDto>? ServiceItems, List<PackagePartItemDto>? PartItems);
 public record UpdateServicePackageDto(string? PackageName, string? DealerCode, string? TakingTime, string? Description,
     bool? IsPublicFlag, bool? IsUserBasePrice, List<PackageServiceItemDto>? ServiceItems, List<PackagePartItemDto>? PartItems);
+// Ser_CampaignMarketing: chiến dịch marketing (điều kiện áp dụng + phụ tùng khuyến mãi).
+public record CampaignConditionDto(string ConditionType, string Value);
+public record CampaignPartDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? Price, string? Note);
+public record CreateCampaignDto(string? CamMarketingNo, string CamMarketingName, string? Description, string? CamMarketingStatus,
+    DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd,
+    bool? ConditionPlateNo, bool? ConditionDealer, bool? ConditionVIN, bool? ConditionFullVIN,
+    List<CampaignConditionDto>? Conditions, List<CampaignPartDto>? Parts);
+// Ser_CampaignMarketing_GetForRoPartItem: lọc chiến dịch áp dụng cho xe/RO (CarID/ROID + ngày hiệu lực).
+public record MatchCampaignsDto(string? CarIds, string? RoIds, string? EffDate);
 
 public interface IBookingService
 {
@@ -136,6 +145,11 @@ public interface IBookingService
     Task<object?> GetServicePackageAsync(long id);                                // chi tiết gói dịch vụ (kèm dịch vụ + phụ tùng)
     Task<object?> UpdateServicePackageAsync(long id, UpdateServicePackageDto dto); // sửa gói dịch vụ (Ser_ServicePackage_Update)
     Task<object?> DeleteServicePackageAsync(long id);                             // xóa gói dịch vụ (Ser_ServicePackage_Delete)
+    Task<object> CreateCampaignAsync(CreateCampaignDto dto);                      // tạo/cập nhật chiến dịch marketing (Ser_CampaignMarketing)
+    Task<object> ListCampaignsAsync(string? keyword, string? status, bool? active);  // danh sách chiến dịch (Ser_CampaignMarketing_SearchDL)
+    Task<object?> GetCampaignAsync(string camMarketingNo);                        // chi tiết chiến dịch (kèm điều kiện + phụ tùng)
+    Task<object?> DeleteCampaignAsync(string camMarketingNo);                     // xóa chiến dịch + điều kiện + phụ tùng
+    Task<object> MatchCampaignsAsync(MatchCampaignsDto dto);                      // lọc chiến dịch áp dụng cho xe/RO (Ser_CampaignMarketing_GetForRoPartItem)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -2038,6 +2052,240 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             serviceAmount = Math.Round(serviceAmount, 2), partAmount = Math.Round(partAmount, 2),
             totalAmount = Math.Round(serviceAmount + partAmount, 2),
             serviceItems = svcViews, partItems = partViews
+        };
+    }
+
+    // ---- Chiến dịch marketing (Ser_CampaignMarketing) ----
+
+    // Tạo/cập nhật chiến dịch marketing + điều kiện áp dụng + phụ tùng khuyến mãi (Ser_CampaignMarketing_Create/Update).
+    public async Task<object> CreateCampaignAsync(CreateCampaignDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.CamMarketingName))
+            throw new InvalidOperationException("Cần CamMarketingName (tên chiến dịch).");
+        var no = string.IsNullOrWhiteSpace(dto.CamMarketingNo)
+            ? "CM" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99)
+            : dto.CamMarketingNo!.Trim();
+        var status = string.IsNullOrWhiteSpace(dto.CamMarketingStatus) ? CampaignStatuses.Approve : dto.CamMarketingStatus!.Trim().ToUpperInvariant();
+        if (dto.EffDateStart.HasValue && dto.EffDateEnd.HasValue && dto.EffDateEnd.Value < dto.EffDateStart.Value)
+            throw new InvalidOperationException("EffDateEnd phải sau EffDateStart.");
+        if (dto.WarrantyDateStart.HasValue && dto.WarrantyDateEnd.HasValue && dto.WarrantyDateEnd.Value < dto.WarrantyDateStart.Value)
+            throw new InvalidOperationException("WarrantyDateEnd phải sau WarrantyDateStart.");
+
+        var camp = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == Org && x.CamMarketingNo == no);
+        if (camp is null)
+        {
+            camp = new CampaignMarketing { OrgId = Org, CamMarketingNo = no };
+            db.CampaignMarketings.Add(camp);
+        }
+        camp.CamMarketingName = dto.CamMarketingName.Trim();
+        camp.Description = dto.Description;
+        camp.CamMarketingStatus = status;
+        camp.EffDateStart = dto.EffDateStart;
+        camp.EffDateEnd = dto.EffDateEnd;
+        camp.WarrantyDateStart = dto.WarrantyDateStart;
+        camp.WarrantyDateEnd = dto.WarrantyDateEnd;
+        camp.ConditionPlateNo = dto.ConditionPlateNo ?? false;
+        camp.ConditionDealer = dto.ConditionDealer ?? false;
+        camp.ConditionVIN = dto.ConditionVIN ?? false;
+        camp.ConditionFullVIN = dto.ConditionFullVIN ?? false;
+
+        // Thay toàn bộ điều kiện + phụ tùng (giống Ser_CampaignMarketing_Update ghi đè danh sách con).
+        var oldConds = await db.CampaignMarketingConditions.Where(x => x.OrgId == Org && x.CamMarketingNo == no).ToListAsync();
+        var oldParts = await db.CampaignMarketingParts.Where(x => x.OrgId == Org && x.CamMarketingNo == no).ToListAsync();
+        db.CampaignMarketingConditions.RemoveRange(oldConds);
+        db.CampaignMarketingParts.RemoveRange(oldParts);
+
+        if (dto.Conditions is not null)
+            foreach (var c in dto.Conditions)
+            {
+                if (string.IsNullOrWhiteSpace(c.Value)) continue;
+                var type = (c.ConditionType ?? "").Trim();
+                if (!CampaignConditionTypes.All.Contains(type, StringComparer.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"ConditionType '{type}' không hợp lệ (chỉ PlateNo/Dealer/VIN/FullVIN).");
+                db.CampaignMarketingConditions.Add(new CampaignMarketingCondition
+                { OrgId = Org, CamMarketingNo = no, ConditionType = type, Value = c.Value.Trim() });
+            }
+
+        if (dto.Parts is not null)
+        {
+            var seen = new HashSet<string>();
+            foreach (var p in dto.Parts)
+            {
+                if (string.IsNullOrWhiteSpace(p.PartCode)) continue;
+                var partCode = p.PartCode.Trim().ToUpperInvariant();
+                if (!seen.Add(partCode)) continue;   // dedupe theo PartCode
+                db.CampaignMarketingParts.Add(new CampaignMarketingPart
+                {
+                    OrgId = Org, CamMarketingNo = no, PartCode = partCode,
+                    PartName = string.IsNullOrWhiteSpace(p.PartName) ? partCode : p.PartName!.Trim(),
+                    Unit = p.Unit?.Trim() ?? "",
+                    Quantity = p.Quantity is > 0 ? p.Quantity!.Value : 0m,
+                    Price = p.Price is > 0 ? p.Price!.Value : 0m,
+                    Note = p.Note
+                });
+            }
+        }
+        await db.SaveChangesAsync();
+        return await BuildCampaignViewAsync(camp);
+    }
+
+    // Danh sách chiến dịch (Ser_CampaignMarketing_SearchDL): lọc theo từ khóa/trạng thái/cờ hiệu lực.
+    public async Task<object> ListCampaignsAsync(string? keyword, string? status, bool? active)
+    {
+        var q = db.CampaignMarketings.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            var k = keyword.Trim();
+            q = q.Where(x => x.CamMarketingNo.Contains(k) || x.CamMarketingName.Contains(k));
+        }
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var s = status.Trim().ToUpperInvariant();
+            q = q.Where(x => x.CamMarketingStatus == s);
+        }
+        var list = await q.OrderBy(x => x.CamMarketingNo).ToListAsync();
+        var today = DateTime.Today;
+        var views = new List<object>();
+        foreach (var c in list)
+        {
+            var isActive = CampaignStatuses.IsActive(c.CamMarketingStatus)
+                && (!c.EffDateStart.HasValue || c.EffDateStart.Value.Date <= today)
+                && (!c.EffDateEnd.HasValue || c.EffDateEnd.Value.Date >= today);
+            if (active.HasValue && active.Value != isActive) continue;
+            var partCount = await db.CampaignMarketingParts.CountAsync(x => x.OrgId == Org && x.CamMarketingNo == c.CamMarketingNo);
+            var condCount = await db.CampaignMarketingConditions.CountAsync(x => x.OrgId == Org && x.CamMarketingNo == c.CamMarketingNo);
+            views.Add(new
+            {
+                c.Id, c.CamMarketingNo, c.CamMarketingName, c.Description, c.CamMarketingStatus,
+                c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd,
+                c.ConditionPlateNo, c.ConditionDealer, c.ConditionVIN, c.ConditionFullVIN,
+                c.CreatedAt, isActive, partCount, conditionCount = condCount
+            });
+        }
+        return new { count = views.Count, items = views };
+    }
+
+    // Chi tiết 1 chiến dịch (kèm điều kiện + phụ tùng).
+    public async Task<object?> GetCampaignAsync(string camMarketingNo)
+    {
+        var no = (camMarketingNo ?? "").Trim();
+        var camp = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == Org && x.CamMarketingNo == no);
+        return camp is null ? null : await BuildCampaignViewAsync(camp);
+    }
+
+    // Xóa chiến dịch + điều kiện + phụ tùng.
+    public async Task<object?> DeleteCampaignAsync(string camMarketingNo)
+    {
+        var no = (camMarketingNo ?? "").Trim();
+        var camp = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == Org && x.CamMarketingNo == no);
+        if (camp is null) return null;
+        var conds = await db.CampaignMarketingConditions.Where(x => x.OrgId == Org && x.CamMarketingNo == no).ToListAsync();
+        var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == Org && x.CamMarketingNo == no).ToListAsync();
+        db.CampaignMarketingConditions.RemoveRange(conds);
+        db.CampaignMarketingParts.RemoveRange(parts);
+        db.CampaignMarketings.Remove(camp);
+        await db.SaveChangesAsync();
+        return new { camp.CamMarketingNo, removedConditions = conds.Count, removedParts = parts.Count };
+    }
+
+    // Ser_CampaignMarketing_GetForRoPartItem: lọc chiến dịch đang hiệu lực áp dụng cho xe/RO.
+    // Điều kiện: CamMarketingStatus='A'; khoảng hiệu lực (EffDateStart..EffDateEnd) chứa ngày xét;
+    // khoảng ngày kích hoạt bảo hành chứa WarrantyRegistrationDate của xe; và các điều kiện biển số/đại lý/VIN.
+    public async Task<object> MatchCampaignsAsync(MatchCampaignsDto dto)
+    {
+        var effDate = DateTime.TryParse(dto.EffDate, out var ed) ? ed.Date : DateTime.Today;
+        var carIds = SplitList(dto.CarIds);
+        var roIds = SplitList(dto.RoIds);
+        // Xe xét: lấy từ lịch hẹn (Vin/Plate/DealerCode) theo CarIds (ở đây CarId ↔ Appointment.Code) hoặc theo RO.
+        var cars = new List<(string CarId, string? Plate, string? FrameNo, string DealerCode, DateTime? WarrantyDate)>();
+        if (carIds.Length > 0)
+        {
+            var appts = await db.Appointments.Where(a => a.OrgId == Org && carIds.Contains(a.Code)).ToListAsync();
+            foreach (var a in appts)
+                cars.Add((a.Code, a.Plate, a.Vin, a.DealerCode ?? "", null));
+        }
+        if (roIds.Length > 0)
+        {
+            var ros = await db.RepairOrders.Where(r => r.OrgId == Org && roIds.Contains(r.RoId)).ToListAsync();
+            foreach (var r in ros)
+                cars.Add((r.RoId, r.PlateNo, r.FrameNo, r.DealerCode ?? "", null));
+        }
+
+        var campaigns = await db.CampaignMarketings.Where(x => x.OrgId == Org && x.CamMarketingStatus == CampaignStatuses.Approve).ToListAsync();
+        var conds = await db.CampaignMarketingConditions.Where(x => x.OrgId == Org).ToListAsync();
+        var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == Org).ToListAsync();
+
+        var matched = new List<object>();
+        foreach (var c in campaigns)
+        {
+            // Khoảng hiệu lực chiến dịch phải chứa ngày xét (null = không ràng buộc).
+            if (c.EffDateStart.HasValue && c.EffDateStart.Value.Date > effDate) continue;
+            if (c.EffDateEnd.HasValue && c.EffDateEnd.Value.Date < effDate) continue;
+
+            var cConds = conds.Where(x => x.CamMarketingNo == c.CamMarketingNo).ToList();
+            var matchedCars = new List<string>();
+            foreach (var car in cars)
+            {
+                // Điều kiện ngày kích hoạt bảo hành (WarrantyDateStart..WarrantyDateEnd chứa WarrantyRegistrationDate).
+                if (c.WarrantyDateStart.HasValue || c.WarrantyDateEnd.HasValue)
+                {
+                    if (!car.WarrantyDate.HasValue) continue;
+                    var wd = car.WarrantyDate.Value.Date;
+                    if (c.WarrantyDateStart.HasValue && c.WarrantyDateStart.Value.Date > wd) continue;
+                    if (c.WarrantyDateEnd.HasValue && c.WarrantyDateEnd.Value.Date < wd) continue;
+                }
+                // Điều kiện biển số: khớp tiền tố (StartPlateNo + '%').
+                if (c.ConditionPlateNo)
+                {
+                    var plate = car.Plate ?? "";
+                    if (!cConds.Any(x => x.ConditionType == CampaignConditionTypes.PlateNo && plate.StartsWith(x.Value, StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                // Điều kiện đại lý: khớp bằng.
+                if (c.ConditionDealer)
+                {
+                    if (!cConds.Any(x => x.ConditionType == CampaignConditionTypes.Dealer && string.Equals(x.Value, car.DealerCode, StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                // Điều kiện ký tự VIN: khớp chứa.
+                if (c.ConditionVIN)
+                {
+                    var frame = car.FrameNo ?? "";
+                    if (!cConds.Any(x => x.ConditionType == CampaignConditionTypes.VIN && frame.Contains(x.Value, StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                // Điều kiện VIN đầy đủ: khớp bằng.
+                if (c.ConditionFullVIN)
+                {
+                    if (!cConds.Any(x => x.ConditionType == CampaignConditionTypes.FullVIN && string.Equals(x.Value, car.FrameNo ?? "", StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                matchedCars.Add(car.CarId);
+            }
+            if (cars.Count > 0 && matchedCars.Count == 0) continue;   // có xe xét nhưng không xe nào khớp
+            matched.Add(new
+            {
+                c.CamMarketingNo, c.CamMarketingName, c.Description, c.CamMarketingStatus,
+                c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd,
+                matchedCarIds = matchedCars,
+                parts = parts.Where(p => p.CamMarketingNo == c.CamMarketingNo)
+                    .Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity, p.Price, p.Note })
+            });
+        }
+        return new { effDate = effDate.ToString("yyyy-MM-dd"), carCount = cars.Count, count = matched.Count, items = matched };
+    }
+
+    // Dựng view 1 chiến dịch: header + điều kiện + phụ tùng + tổng tiền phụ tùng.
+    private async Task<object> BuildCampaignViewAsync(CampaignMarketing c)
+    {
+        var conds = await db.CampaignMarketingConditions.Where(x => x.OrgId == Org && x.CamMarketingNo == c.CamMarketingNo)
+            .OrderBy(x => x.ConditionType).ThenBy(x => x.Value).ToListAsync();
+        var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == Org && x.CamMarketingNo == c.CamMarketingNo)
+            .OrderBy(x => x.PartCode).ToListAsync();
+        return new
+        {
+            c.Id, c.CamMarketingNo, c.CamMarketingName, c.Description, c.CamMarketingStatus,
+            c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd,
+            c.ConditionPlateNo, c.ConditionDealer, c.ConditionVIN, c.ConditionFullVIN, c.CreatedAt,
+            conditions = conds.Select(x => new { x.ConditionType, x.Value }),
+            parts = parts.Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity, p.Price, p.Note }),
+            partAmount = Math.Round(parts.Sum(p => p.Price * p.Quantity), 2)
         };
     }
 }

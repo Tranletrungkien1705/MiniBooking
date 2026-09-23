@@ -561,6 +561,75 @@ public sealed class ServicePackagePartItem
     public string? Note { get; set; }
 }
 
+/// <summary>Chiến dịch marketing (chuyển đổi Ser_CampaignMarketing): chương trình khuyến mãi/chiến dịch
+/// áp dụng cho một nhóm xe theo điều kiện (ngày kích hoạt bảo hành, biển số, đại lý, ký tự VIN, VIN đầy đủ)
+/// và khoảng hiệu lực (EffDateStart..EffDateEnd). CamMarketingStatus = 'A' (Approved) mới được áp dụng.
+/// Dùng để gợi ý chiến dịch + phụ tùng khuyến mãi khi tạo lệnh sửa chữa (Ser_CampaignMarketing_GetForRoPartItem).</summary>
+public sealed class CampaignMarketing
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamMarketingNo { get; set; } = "";     // CamMarketingNo (mã chiến dịch)
+    public string CamMarketingName { get; set; } = "";   // CamMarketingName
+    public string? Description { get; set; }               // Description
+    public string CamMarketingStatus { get; set; } = "A"; // A=Approved, khác = chưa duyệt/khóa
+    public DateTime? EffDateStart { get; set; }            // EffDateStart — hiệu lực từ
+    public DateTime? EffDateEnd { get; set; }              // EffDateEnd — hiệu lực đến
+    public DateTime? WarrantyDateStart { get; set; }       // WarrantyDateStart — khoảng ngày kích hoạt bảo hành
+    public DateTime? WarrantyDateEnd { get; set; }         // WarrantyDateEnd
+    // Điều kiện áp dụng (null = không ràng buộc theo tiêu chí đó):
+    public bool ConditionPlateNo { get; set; }             // bật ràng buộc theo biển số (tiền tố)
+    public bool ConditionDealer { get; set; }              // bật ràng buộc theo đại lý
+    public bool ConditionVIN { get; set; }                 // bật ràng buộc theo ký tự VIN (chứa)
+    public bool ConditionFullVIN { get; set; }             // bật ràng buộc theo VIN đầy đủ (bằng)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public List<CampaignMarketingPart> Parts { get; set; } = new();
+}
+
+/// <summary>Phụ tùng khuyến mãi của chiến dịch (chuyển đổi Ser_CampaignMarketingPart):
+/// danh sách phụ tùng áp dụng kèm chiến dịch (mã/tên/số lượng/đơn giá).</summary>
+public sealed class CampaignMarketingPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamMarketingNo { get; set; } = "";     // FK → CampaignMarketing.CamMarketingNo
+    public string PartCode { get; set; } = "";            // PartCode
+    public string PartName { get; set; } = "";            // VieName
+    public string Unit { get; set; } = "";                // Unit
+    public decimal Quantity { get; set; }                  // Quantity
+    public decimal Price { get; set; }                     // Price
+    public string? Note { get; set; }
+}
+
+/// <summary>Điều kiện áp dụng chiến dịch (chuyển đổi Ser_CampaignMarketingPlateNo/Dealer/VIN/FullVIN):
+/// mỗi dòng là 1 giá trị điều kiện của 1 chiến dịch theo từng loại (PlateNo/Dealer/VIN/FullVIN).</summary>
+public sealed class CampaignMarketingCondition
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamMarketingNo { get; set; } = "";     // FK → CampaignMarketing.CamMarketingNo
+    public string ConditionType { get; set; } = "";       // PlateNo/Dealer/VIN/FullVIN
+    public string Value { get; set; } = "";               // giá trị điều kiện (tiền tố biển số / mã đại lý / ký tự VIN / VIN đầy đủ)
+}
+
+/// <summary>Loại điều kiện áp dụng chiến dịch (chuyển đổi các bảng điều kiện Ser_CampaignMarketing*).</summary>
+public static class CampaignConditionTypes
+{
+    public const string PlateNo = "PlateNo";   // Ser_CampaignMarketingPlateNo.StartPlateNo (khớp tiền tố)
+    public const string Dealer  = "Dealer";    // Ser_CampaignMarketingDealer.DealerCode (khớp bằng)
+    public const string VIN     = "VIN";       // Ser_CampaignMarketingVIN.VIN (khớp chứa)
+    public const string FullVIN = "FullVIN";   // Ser_CampaignMarketingFullVIN.FullVIN (khớp bằng)
+
+    public static readonly string[] All = { PlateNo, Dealer, VIN, FullVIN };
+}
+
+/// <summary>Trạng thái chiến dịch (chuyển đổi TConst.CamMarketingStatus): chỉ 'A' (Approved) mới áp dụng.</summary>
+public static class CampaignStatuses
+{
+    public const string Approve = "A";
+    public static bool IsActive(string? code) => string.Equals((code ?? "").Trim(), Approve, StringComparison.OrdinalIgnoreCase);
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

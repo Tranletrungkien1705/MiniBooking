@@ -559,6 +559,33 @@ app.MapDelete("/api/service-packages/{id:long}", async (long id, IBookingService
     return r is null ? Results.NotFound(new { id, error = "Không thấy gói dịch vụ." }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// ---- Chiến dịch marketing (Ser_CampaignMarketing): điều kiện áp dụng + phụ tùng khuyến mãi ----
+app.MapPost("/api/campaigns", async (CreateCampaignDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CamMarketingName)) return Results.BadRequest(new { error = "Cần CamMarketingName." });
+    try { return Results.Ok(await svc.CreateCampaignAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/campaigns", async (IBookingService svc, string? keyword, string? status, bool? active) =>
+    Results.Ok(await svc.ListCampaignsAsync(keyword, status, active))).RequireAuthorization();
+
+app.MapGet("/api/campaigns/{camMarketingNo}", async (string camMarketingNo, IBookingService svc) =>
+{
+    var r = await svc.GetCampaignAsync(camMarketingNo);
+    return r is null ? Results.NotFound(new { camMarketingNo, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapDelete("/api/campaigns/{camMarketingNo}", async (string camMarketingNo, IBookingService svc) =>
+{
+    var r = await svc.DeleteCampaignAsync(camMarketingNo);
+    return r is null ? Results.NotFound(new { camMarketingNo, error = "Không thấy chiến dịch." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_CampaignMarketing_GetForRoPartItem: lọc chiến dịch đang hiệu lực áp dụng cho xe/RO (kèm phụ tùng khuyến mãi).
+app.MapGet("/api/campaigns/match", async (IBookingService svc, string? carIds, string? roIds, string? effDate) =>
+    Results.Ok(await svc.MatchCampaignsAsync(new MatchCampaignsDto(carIds, roIds, effDate)))).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

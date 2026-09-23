@@ -27,6 +27,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServicePackage> ServicePackages => Set<ServicePackage>();
     public DbSet<ServicePackageServiceItem> ServicePackageServiceItems => Set<ServicePackageServiceItem>();
     public DbSet<ServicePackagePartItem> ServicePackagePartItems => Set<ServicePackagePartItem>();
+    public DbSet<CampaignMarketing> CampaignMarketings => Set<CampaignMarketing>();
+    public DbSet<CampaignMarketingPart> CampaignMarketingParts => Set<CampaignMarketingPart>();
+    public DbSet<CampaignMarketingCondition> CampaignMarketingConditions => Set<CampaignMarketingCondition>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -51,5 +54,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<ServicePackage>().HasIndex(x => new { x.OrgId, x.DealerCode, x.PackageNo }).IsUnique();
         b.Entity<ServicePackageServiceItem>().HasIndex(x => new { x.OrgId, x.PackageId, x.SerCode });
         b.Entity<ServicePackagePartItem>().HasIndex(x => new { x.OrgId, x.PackageId, x.PartCode });
+        b.Entity<CampaignMarketing>().HasIndex(x => new { x.OrgId, x.CamMarketingNo }).IsUnique();
+        b.Entity<CampaignMarketingPart>().HasIndex(x => new { x.OrgId, x.CamMarketingNo, x.PartCode });
+        b.Entity<CampaignMarketingCondition>().HasIndex(x => new { x.OrgId, x.CamMarketingNo, x.ConditionType });
     }
 }
