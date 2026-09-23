@@ -8,6 +8,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Org> Orgs => Set<Org>();
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<CareReminder> CareReminders => Set<CareReminder>();
+    public DbSet<BirthdayCare> BirthdayCares => Set<BirthdayCare>();
     public DbSet<Engineer> Engineers => Set<Engineer>();
     public DbSet<ServiceBay> ServiceBays => Set<ServiceBay>();
     public DbSet<AppType> AppTypes => Set<AppType>();
@@ -37,6 +38,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
         b.Entity<Appointment>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<Appointment>().Property(x => x.Status).HasConversion<int>();
+        b.Entity<BirthdayCare>().HasIndex(x => new { x.OrgId, x.CareBthId }).IsUnique();
         b.Entity<ServiceBay>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<AppType>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<CavityType>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();

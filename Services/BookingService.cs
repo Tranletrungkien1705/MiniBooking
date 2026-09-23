@@ -11,6 +11,9 @@ public record CheckInDto(string? RoNo);
 public record CreateReminderDto(string CustomerName, string Phone, string? Vin, string? Plate, string? CareType, DateTime DueDate, string? Note);
 public record ContactDto(string? Note);
 public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? DealerCode);
+// Ser_CustomerCareBth: nhắc chăm sóc sinh nhật KH (tạo/cập nhật dòng nhắc + cập nhật trạng thái liên hệ).
+public record CreateBirthdayCareDto(string? CareBthId, string? DealerCode, string CusId, string CustomerName, string? Phone, string? Email, string? Plate, string? FrameNo, string? TradeMarkCode, string? ModelName, DateTime? DateBth, string? Remark);
+public record UpdateBirthdayCareDto(string? Status, string? ContactDate, string? Remark, DateTime? DateBth);
 public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
 public record AddAppTypeDto(string Code, string Name);
@@ -95,6 +98,11 @@ public interface IBookingService
     Task<object?> ContactReminderAsync(long id, string? note);
     Task<object?> ConvertReminderAsync(long id, ConvertDto dto);
     Task<object> CareStatsAsync();
+    Task<object> CreateBirthdayCareAsync(CreateBirthdayCareDto dto);   // tạo/cập nhật nhắc sinh nhật (Ser_CustomerCareBth)
+    Task<object> ListBirthdayCaresAsync(string? status, string? dealer, string? customerName, string? plate, string? frameNo, string? dateBth, int? recordStart, int? recordCount);  // tìm nhắc sinh nhật (Ser_CustomerCareBth_Get_DL)
+    Task<object?> GetBirthdayCareAsync(string careBthId);              // chi tiết 1 nhắc sinh nhật
+    Task<object?> UpdateBirthdayCareAsync(string careBthId, UpdateBirthdayCareDto dto);  // cập nhật trạng thái/liên hệ (Ser_CustomerCareBth_Update)
+    Task<object> BirthdayCareStatsAsync();                             // thống kê nhắc sinh nhật
     Task<object> AddEngineerAsync(AddEngineerDto dto);
     Task<object> EngineerWorkloadAsync(string date, string? dealer);
     Task<object> AddBayAsync(AddBayDto dto);
@@ -492,6 +500,101 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             contacted = await q.CountAsync(r => r.Status == "Contacted"),
             booked = await q.CountAsync(r => r.Status == "Booked"),
             overdue = await q.CountAsync(r => r.Status == "Pending" && r.DueDate.Date < today)
+        };
+    }
+
+    // ===== Nhắc chăm sóc sinh nhật KH (Ser_CustomerCareBth) =====
+    public async Task<object> CreateBirthdayCareAsync(CreateBirthdayCareDto dto)
+    {
+        var careBthId = string.IsNullOrWhiteSpace(dto.CareBthId)
+            ? "BTH" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99)
+            : dto.CareBthId!.Trim();
+        var existing = await db.BirthdayCares.FirstOrDefaultAsync(x => x.OrgId == Org && x.CareBthId == careBthId);
+        // Ser_CustomerCareBth: DateBth chuẩn hóa về năm hiện tại (29/02 → 28/02 nếu năm không nhuận).
+        DateTime? dateBth = dto.DateBth.HasValue
+            ? BirthdayCareStatuses.NormalizeToYear(dto.DateBth.Value, DateTime.Today.Year)
+            : null;
+        if (existing is null)
+        {
+            existing = new BirthdayCare { OrgId = Org, CareBthId = careBthId, Status = BirthdayCareStatuses.NotContacted };
+            db.BirthdayCares.Add(existing);
+        }
+        existing.DealerCode = dto.DealerCode?.Trim() ?? existing.DealerCode;
+        existing.CusId = dto.CusId.Trim();
+        existing.CustomerName = dto.CustomerName.Trim();
+        existing.Phone = dto.Phone?.Trim();
+        existing.Email = dto.Email?.Trim();
+        existing.Plate = dto.Plate?.Trim();
+        existing.FrameNo = dto.FrameNo?.Trim();
+        existing.TradeMarkCode = dto.TradeMarkCode?.Trim();
+        existing.ModelName = dto.ModelName?.Trim();
+        if (dateBth.HasValue) existing.DateBth = dateBth;
+        if (!string.IsNullOrWhiteSpace(dto.Remark)) existing.Remark = dto.Remark;
+        existing.LogLUDateTime = DateTime.Now;
+        await db.SaveChangesAsync();
+        return new { existing.Id, existing.CareBthId, existing.CustomerName, existing.DateBth, existing.Status, statusText = BirthdayCareStatuses.Text(existing.Status) };
+    }
+
+    // Ser_CustomerCareBth_Get_DL: tìm nhắc sinh nhật theo trạng thái/đại lý/tên KH/biển số/số khung/ngày sinh + phân trang.
+    public async Task<object> ListBirthdayCaresAsync(string? status, string? dealer, string? customerName, string? plate, string? frameNo, string? dateBth, int? recordStart, int? recordCount)
+    {
+        var q = db.BirthdayCares.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status.Trim());
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer.Trim());
+        if (!string.IsNullOrWhiteSpace(customerName)) q = q.Where(x => x.CustomerName.Contains(customerName.Trim()));
+        if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.Plate != null && x.Plate.Contains(plate.Trim()));
+        if (!string.IsNullOrWhiteSpace(frameNo)) q = q.Where(x => x.FrameNo != null && x.FrameNo.Contains(frameNo.Trim()));
+        if (!string.IsNullOrWhiteSpace(dateBth) && DateTime.TryParse(dateBth, out var d)) q = q.Where(x => x.DateBth != null && x.DateBth.Value.Date == d.Date);
+        var total = await q.CountAsync();
+        var start = Math.Max(0, recordStart ?? 0);
+        var count = recordCount is > 0 ? recordCount!.Value : 100;
+        var items = await q.OrderByDescending(x => x.DateBth).ThenBy(x => x.CustomerName)
+            .Skip(start).Take(count)
+            .Select(x => new { x.Id, x.CareBthId, x.DealerCode, x.CusId, x.CustomerName, x.Phone, x.Email, x.Plate, x.FrameNo, x.TradeMarkCode, x.ModelName, x.DateBth, x.Status, x.ContactDate, x.Remark, x.CreatedAt })
+            .ToListAsync();
+        return new { total, count = items.Count, recordStart = start, items = items.Select(x => new { x.Id, x.CareBthId, x.DealerCode, x.CusId, x.CustomerName, x.Phone, x.Email, x.Plate, x.FrameNo, x.TradeMarkCode, x.ModelName, x.DateBth, x.Status, statusText = BirthdayCareStatuses.Text(x.Status), x.ContactDate, x.Remark, x.CreatedAt }) };
+    }
+
+    public async Task<object?> GetBirthdayCareAsync(string careBthId)
+    {
+        var x = await db.BirthdayCares.FirstOrDefaultAsync(r => r.OrgId == Org && r.CareBthId == careBthId);
+        if (x is null) return null;
+        return new { x.Id, x.CareBthId, x.DealerCode, x.CusId, x.CustomerName, x.Phone, x.Email, x.Plate, x.FrameNo, x.TradeMarkCode, x.ModelName, x.DateBth, x.Status, statusText = BirthdayCareStatuses.Text(x.Status), x.ContactDate, x.Remark, x.CreatedAt, x.LogLUDateTime, x.LogLUBy };
+    }
+
+    // Ser_CustomerCareBth_Update: cập nhật trạng thái liên hệ/ngày liên hệ/ghi chú/ngày sinh (chặn khi không thấy CareBthId).
+    public async Task<object?> UpdateBirthdayCareAsync(string careBthId, UpdateBirthdayCareDto dto)
+    {
+        var x = await db.BirthdayCares.FirstOrDefaultAsync(r => r.OrgId == Org && r.CareBthId == careBthId);
+        if (x is null) return null;   // Ser_CustomerCareBth_NotFound
+        if (!string.IsNullOrWhiteSpace(dto.Status))
+        {
+            var st = dto.Status!.Trim();
+            if (!BirthdayCareStatuses.All.Contains(st))
+                throw new InvalidOperationException($"Trạng thái '{st}' không hợp lệ (0=Chưa liên hệ, 1=Đã liên hệ, 2=Không liên hệ).");
+            x.Status = st;
+        }
+        if (!string.IsNullOrWhiteSpace(dto.ContactDate) && DateTime.TryParse(dto.ContactDate, out var cd)) x.ContactDate = cd.Date;
+        if (dto.Remark is not null) x.Remark = string.IsNullOrWhiteSpace(dto.Remark) ? null : dto.Remark;
+        if (dto.DateBth.HasValue) x.DateBth = BirthdayCareStatuses.NormalizeToYear(dto.DateBth.Value, DateTime.Today.Year);
+        x.LogLUDateTime = DateTime.Now;
+        await db.SaveChangesAsync();
+        return new { x.Id, x.CareBthId, x.Status, statusText = BirthdayCareStatuses.Text(x.Status), x.ContactDate, x.Remark, x.DateBth };
+    }
+
+    public async Task<object> BirthdayCareStatsAsync()
+    {
+        var q = db.BirthdayCares.Where(x => x.OrgId == Org);
+        var today = DateTime.Today;
+        return new
+        {
+            total = await q.CountAsync(),
+            notContacted = await q.CountAsync(x => x.Status == BirthdayCareStatuses.NotContacted),
+            contacted = await q.CountAsync(x => x.Status == BirthdayCareStatuses.Contacted),
+            notContact = await q.CountAsync(x => x.Status == BirthdayCareStatuses.NotContact),
+            // Sinh nhật trong 7 ngày tới (chưa liên hệ) — gợi ý danh sách cần gọi.
+            upcoming7d = await q.CountAsync(x => x.Status == BirthdayCareStatuses.NotContacted && x.DateBth != null
+                && x.DateBth.Value.Date >= today && x.DateBth.Value.Date <= today.AddDays(7))
         };
     }
 

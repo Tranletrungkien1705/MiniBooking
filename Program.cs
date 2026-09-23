@@ -431,6 +431,38 @@ app.MapPost("/api/care/{id:long}/convert", async (long id, ConvertDto dto, IBook
 
 app.MapGet("/api/care-stats", async (IBookingService svc) => Results.Ok(await svc.CareStatsAsync())).RequireAuthorization();
 
+// ---- Nhắc chăm sóc sinh nhật KH (Ser_CustomerCareBth): mỗi khách 1 dòng nhắc sinh nhật → gọi chúc mừng → cập nhật trạng thái ----
+app.MapPost("/api/birthday-care", async (CreateBirthdayCareDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusId) || string.IsNullOrWhiteSpace(dto.CustomerName))
+        return Results.BadRequest(new { error = "Cần CusId và CustomerName." });
+    return Results.Ok(await svc.CreateBirthdayCareAsync(dto));
+}).RequireAuthorization();
+
+// Ser_CustomerCareBth_Get_DL: tìm nhắc sinh nhật (trạng thái/đại lý/tên KH/biển số/số khung/ngày sinh + phân trang).
+app.MapGet("/api/birthday-care", async (IBookingService svc, string? status, string? dealer, string? customerName,
+    string? plate, string? frameNo, string? dateBth, int? recordStart, int? recordCount) =>
+    Results.Ok(await svc.ListBirthdayCaresAsync(status, dealer, customerName, plate, frameNo, dateBth, recordStart, recordCount))).RequireAuthorization();
+
+app.MapGet("/api/birthday-care/{careBthId}", async (string careBthId, IBookingService svc) =>
+{
+    var r = await svc.GetBirthdayCareAsync(careBthId);
+    return r is null ? Results.NotFound(new { careBthId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_CustomerCareBth_Update: cập nhật trạng thái liên hệ (0/1/2) + ngày liên hệ + ghi chú + ngày sinh.
+app.MapPut("/api/birthday-care/{careBthId}", async (string careBthId, UpdateBirthdayCareDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateBirthdayCareAsync(careBthId, dto);
+        return r is null ? Results.NotFound(new { careBthId, error = "Không thấy nhắc sinh nhật." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { careBthId, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/birthday-care-stats", async (IBookingService svc) => Results.Ok(await svc.BirthdayCareStatsAsync())).RequireAuthorization();
+
 // ---- Chăm sóc KH sau dịch vụ 72h (Ser_CustomerCare72h): khảo sát hài lòng sau khi giao xe ----
 app.MapPost("/api/post-care", async (CreatePostCareDto dto, IBookingService svc) =>
 {

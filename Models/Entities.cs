@@ -42,6 +42,59 @@ public sealed class CareReminder
     public DateTime? ContactedAt { get; set; }
 }
 
+/// <summary>Nhắc chăm sóc sinh nhật KH (chuyển đổi Ser_CustomerCareBth): mỗi khách có 1 dòng nhắc sinh nhật,
+/// DateBth được chuẩn hóa về năm hiện tại (29/02 → 28/02 nếu năm không nhuận). Tổng đài gọi chúc mừng → cập nhật trạng thái.
+/// Status: 0 = Chưa liên hệ, 1 = Đã liên hệ, 2 = Không liên hệ.</summary>
+public sealed class BirthdayCare
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CareBthId { get; set; } = "";     // CareBthId (mã dòng nhắc sinh nhật)
+    public string DealerCode { get; set; } = "";
+    public string CusId { get; set; } = "";         // CusID — khách hàng
+    public string CustomerName { get; set; } = "";  // CusName
+    public string? Phone { get; set; }                // Tel/Mobile
+    public string? Email { get; set; }                // Email
+    public string? Plate { get; set; }                // PlateNo
+    public string? FrameNo { get; set; }              // FrameNo
+    public string? TradeMarkCode { get; set; }        // TradeMarkCode — hãng xe
+    public string? ModelName { get; set; }            // ModelName — dòng xe
+    public DateTime? DateBth { get; set; }            // DateBth — ngày sinh (chuẩn hóa năm hiện tại)
+    public string Status { get; set; } = "0";        // 0=Chưa liên hệ, 1=Đã liên hệ, 2=Không liên hệ
+    public DateTime? ContactDate { get; set; }        // ContactDate — ngày liên hệ
+    public string? Remark { get; set; }               // Remark — ghi chú
+    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreatedDate
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now; // LogLUDateTime
+    public string? LogLUBy { get; set; }              // LogLUBy
+}
+
+/// <summary>Trạng thái nhắc sinh nhật (chuyển đổi Ser_CustomerCareBth.Status): 0/1/2.</summary>
+public static class BirthdayCareStatuses
+{
+    public const string NotContacted = "0";   // Chưa liên hệ
+    public const string Contacted    = "1";   // Đã liên hệ
+    public const string NotContact   = "2";   // Không liên hệ
+
+    public static readonly string[] All = { NotContacted, Contacted, NotContact };
+
+    /// <summary>Tên hiển thị tiếng Việt của trạng thái.</summary>
+    public static string Text(string? code) => (code ?? "").Trim() switch
+    {
+        NotContacted => "Chưa liên hệ",
+        Contacted    => "Đã liên hệ",
+        NotContact   => "Không liên hệ",
+        _            => code ?? ""
+    };
+
+    /// <summary>Chuẩn hóa ngày sinh về năm hiện tại (29/02 → 28/02 nếu năm không nhuận).</summary>
+    public static DateTime NormalizeToYear(DateTime dob, int year)
+    {
+        if (dob.Month == 2 && dob.Day == 29 && !DateTime.IsLeapYear(year))
+            return new DateTime(year, 2, 28);
+        return new DateTime(year, dob.Month, dob.Day);
+    }
+}
+
 /// <summary>Khoang sửa chữa (chuyển đổi Ser_Cavity): cầu nâng/khoang tiếp nhận theo xưởng, có sức chứa theo khung giờ.</summary>
 public sealed class ServiceBay
 {
