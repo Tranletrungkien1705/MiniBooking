@@ -367,6 +367,39 @@ app.MapDelete("/api/reception-forms/{receptionFNo}", async (string receptionFNo,
     catch (InvalidOperationException ex) { return Results.Conflict(new { receptionFNo, error = ex.Message }); }
 }).RequireAuthorization();
 
+// ---- Phân công công việc sửa chữa (Ser_AssignmentWork): gắn RO ↔ công đoạn (kế hoạch/thực tế) + KTV ----
+app.MapPost("/api/work-assignments", async (CreateWorkAssignmentDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RoId)) return Results.BadRequest(new { error = "Cần RoId." });
+    try { return Results.Ok(await svc.CreateWorkAssignmentAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/work-assignments", async (IBookingService svc, string? roId, string? dealer, string? date) =>
+    Results.Ok(await svc.ListWorkAssignmentsAsync(roId, dealer, date))).RequireAuthorization();
+
+app.MapGet("/api/work-assignments/{roId}", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.GetWorkAssignmentAsync(roId);
+    return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapPut("/api/work-assignments/{roId}", async (string roId, UpdateWorkAssignmentDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateWorkAssignmentAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy phân công công việc." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapDelete("/api/work-assignments/{roId}", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.DeleteWorkAssignmentAsync(roId);
+    return r is null ? Results.NotFound(new { roId, error = "Không thấy phân công công việc." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

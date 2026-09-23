@@ -17,6 +17,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
     public DbSet<PostServiceCare> PostServiceCares => Set<PostServiceCare>();
     public DbSet<ReceptionForm> ReceptionForms => Set<ReceptionForm>();
+    public DbSet<WorkAssignment> WorkAssignments => Set<WorkAssignment>();
+    public DbSet<WorkAssignmentStage> WorkAssignmentStages => Set<WorkAssignmentStage>();
+    public DbSet<WorkAssignmentEngineer> WorkAssignmentEngineers => Set<WorkAssignmentEngineer>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -31,5 +34,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<RepairOrder>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
         b.Entity<PostServiceCare>().HasIndex(x => new { x.OrgId, x.CusCareId }).IsUnique();
         b.Entity<ReceptionForm>().HasIndex(x => new { x.OrgId, x.ReceptionFNo }).IsUnique();
+        b.Entity<WorkAssignment>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
+        b.Entity<WorkAssignmentStage>().HasIndex(x => new { x.OrgId, x.AssignmentId, x.WorkType });
+        b.Entity<WorkAssignmentEngineer>().HasIndex(x => new { x.OrgId, x.AssignmentId, x.EngineerCode, x.WorkType });
     }
 }

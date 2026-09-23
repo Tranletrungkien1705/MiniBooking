@@ -29,6 +29,13 @@ public record SearchAppointmentsDto(string? DealerCodes, string? Statuses, strin
 public record UpdateAppointmentDto(string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType,
     DateTime? PreferredAt, string? DealerCode, string? Note, string? BayCode, string? AppTypeCode, DateTime? SlotTo,
     string? Engineer, List<AddServiceItemDto>? ServiceItems, List<AddPartItemDto>? PartItems);
+// Ser_AssignmentWork: phân công công việc sửa chữa cho 1 lệnh sửa chữa (ROID) theo từng công đoạn + KTV.
+public record WorkStageDto(string WorkType, string? CavityCode, DateTime? PlanStart, DateTime? PlanFinish, DateTime? ActualStart, DateTime? ActualFinish);
+public record WorkEngineerDto(string EngineerCode, string? WorkType);
+public record CreateWorkAssignmentDto(string RoId, string? RoNo, string? DealerCode, string? WorkTypeStart, string? WorkTypeFinish,
+    List<WorkStageDto>? Stages, List<WorkEngineerDto>? Engineers);
+public record UpdateWorkAssignmentDto(string? RoNo, string? DealerCode, string? WorkTypeStart, string? WorkTypeFinish,
+    List<WorkStageDto>? Stages, List<WorkEngineerDto>? Engineers);
 
 public interface IBookingService
 {
@@ -80,6 +87,11 @@ public interface IBookingService
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
     Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
     Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto);  // sửa lịch hẹn (Ser_App_UpdateDL)
+    Task<object> CreateWorkAssignmentAsync(CreateWorkAssignmentDto dto);          // phân công công việc sửa chữa (Ser_AssignmentWork_CreateDL)
+    Task<object> ListWorkAssignmentsAsync(string? roId, string? dealer, string? date);  // danh sách phân công (Ser_AssignmentWork_Get_DL)
+    Task<object?> GetWorkAssignmentAsync(string roId);                            // chi tiết phân công theo ROID
+    Task<object?> UpdateWorkAssignmentAsync(string roId, UpdateWorkAssignmentDto dto);  // sửa phân công (Ser_AssignmentWork_UpdateDL)
+    Task<object?> DeleteWorkAssignmentAsync(string roId);                         // xóa phân công (Ser_AssignmentWork_DeleteDL)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -1081,6 +1093,211 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
             a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
             a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo, a.Note
+        };
+    }
+
+    // ===== Phân công công việc sửa chữa (Ser_AssignmentWork) =====
+    // Gắn 1 lệnh sửa chữa (ROID) với kế hoạch/thực tế theo từng công đoạn (SCC/SCD/SCN/SCS/SCDB/SCLR/SCKSC)
+    // + danh sách KTV được phân công. Dedupe theo ROID (1 RO ↔ 1 phân công).
+    public async Task<object> CreateWorkAssignmentAsync(CreateWorkAssignmentDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.RoId)) throw new InvalidOperationException("Cần RoId (mã lệnh sửa chữa).");
+        var roId = dto.RoId.Trim().ToUpperInvariant();
+
+        // MyCheck_Ser_RO: lệnh sửa chữa phải tồn tại (Ser_RO) trước khi phân công.
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' không tồn tại.");
+
+        var stages = NormalizeStages(dto.Stages);
+        // MyCheck_SerAssignmentWork_PlanDateTime_Cavity: chặn trùng khung giờ kế hoạch trên cùng khoang.
+        await ValidateStageOverlapAsync(stages, excludeAssignmentId: null);
+
+        var wa = await db.WorkAssignments.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (wa is null)
+        {
+            wa = new WorkAssignment { OrgId = Org, RoId = roId };
+            db.WorkAssignments.Add(wa);
+        }
+        wa.RoNo = string.IsNullOrWhiteSpace(dto.RoNo) ? ro.RoNo : dto.RoNo!.Trim();
+        wa.DealerCode = dto.DealerCode?.Trim() ?? ro.DealerCode;
+        wa.WorkTypeStart = NormalizeWorkType(dto.WorkTypeStart);
+        wa.WorkTypeFinish = NormalizeWorkType(dto.WorkTypeFinish);
+        wa.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();   // cần Id cho các bảng con
+
+        await ReplaceStagesAsync(wa, stages);
+        await ReplaceEngineersAsync(wa, dto.Engineers);
+        await db.SaveChangesAsync();
+        return await BuildAssignmentViewAsync(wa);
+    }
+
+    // Danh sách phân công; lọc theo ROID, xưởng, ngày tạo.
+    public async Task<object> ListWorkAssignmentsAsync(string? roId, string? dealer, string? date)
+    {
+        var q = db.WorkAssignments.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(roId)) q = q.Where(x => x.RoId == roId.Trim().ToUpperInvariant());
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var d)) q = q.Where(x => x.CreatedAt.Date == d.Date);
+        var list = await q.OrderByDescending(x => x.CreatedAt).Take(500).ToListAsync();
+        var items = new List<object>();
+        foreach (var wa in list) items.Add(await BuildAssignmentViewAsync(wa));
+        return new { count = items.Count, items };
+    }
+
+    public async Task<object?> GetWorkAssignmentAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var wa = await db.WorkAssignments.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        return wa is null ? null : await BuildAssignmentViewAsync(wa);
+    }
+
+    // Ser_AssignmentWork_UpdateDL: cập nhật kế hoạch/thực tế + thay danh sách KTV (delete olds → insert).
+    public async Task<object?> UpdateWorkAssignmentAsync(string roId, UpdateWorkAssignmentDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var wa = await db.WorkAssignments.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (wa is null) return null;
+
+        if (dto.Stages is not null)
+        {
+            var stages = NormalizeStages(dto.Stages);
+            await ValidateStageOverlapAsync(stages, excludeAssignmentId: wa.Id);
+            await ReplaceStagesAsync(wa, stages);
+        }
+        if (dto.Engineers is not null) await ReplaceEngineersAsync(wa, dto.Engineers);
+        if (!string.IsNullOrWhiteSpace(dto.RoNo)) wa.RoNo = dto.RoNo!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto.DealerCode)) wa.DealerCode = dto.DealerCode!.Trim();
+        if (dto.WorkTypeStart is not null) wa.WorkTypeStart = NormalizeWorkType(dto.WorkTypeStart);
+        if (dto.WorkTypeFinish is not null) wa.WorkTypeFinish = NormalizeWorkType(dto.WorkTypeFinish);
+        wa.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return await BuildAssignmentViewAsync(wa);
+    }
+
+    public async Task<object?> DeleteWorkAssignmentAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var wa = await db.WorkAssignments.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (wa is null) return null;
+        var stages = await db.WorkAssignmentStages.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+        var engs = await db.WorkAssignmentEngineers.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+        db.WorkAssignmentStages.RemoveRange(stages);
+        db.WorkAssignmentEngineers.RemoveRange(engs);
+        db.WorkAssignments.Remove(wa);
+        await db.SaveChangesAsync();
+        return new { roId, deleted = true };
+    }
+
+    // Chuẩn hóa danh sách công đoạn: chỉ nhận mã hợp lệ (WorkStages.All), dedupe theo WorkType.
+    private static List<WorkStageDto> NormalizeStages(List<WorkStageDto>? stages)
+    {
+        var result = new List<WorkStageDto>();
+        if (stages is null) return result;
+        var seen = new HashSet<string>();
+        foreach (var s in stages)
+        {
+            var wt = NormalizeWorkType(s.WorkType);
+            if (wt is null || !seen.Add(wt)) continue;
+            result.Add(s with { WorkType = wt });
+        }
+        return result;
+    }
+
+    private static string? NormalizeWorkType(string? code)
+    {
+        var c = (code ?? "").Trim().ToUpperInvariant();
+        return WorkStages.All.Contains(c) ? c : null;
+    }
+
+    // MyCheck_SerAssignmentWork_PlanDateTime_Cavity: 2 công đoạn cùng khoang không được trùng khung giờ kế hoạch.
+    private async Task ValidateStageOverlapAsync(List<WorkStageDto> stages, long? excludeAssignmentId)
+    {
+        var planned = stages.Where(s => !string.IsNullOrWhiteSpace(s.CavityCode) && s.PlanStart.HasValue && s.PlanFinish.HasValue).ToList();
+        if (planned.Count == 0) return;
+
+        // Kiểm tra trùng trong chính request (cùng khoang, khác công đoạn).
+        for (int i = 0; i < planned.Count; i++)
+            for (int j = i + 1; j < planned.Count; j++)
+            {
+                var a = planned[i]; var b = planned[j];
+                if (string.Equals(a.CavityCode!.Trim(), b.CavityCode!.Trim(), StringComparison.OrdinalIgnoreCase)
+                    && a.PlanStart!.Value < b.PlanFinish!.Value && a.PlanFinish!.Value > b.PlanStart!.Value)
+                    throw new InvalidOperationException($"Khoang '{a.CavityCode}' bị trùng khung giờ kế hoạch giữa {a.WorkType} và {b.WorkType}.");
+            }
+
+        // Kiểm tra trùng với các phân công khác đã lưu (cùng khoang, giao khung giờ kế hoạch).
+        var cavityCodes = planned.Select(s => s.CavityCode!.Trim().ToUpperInvariant()).Distinct().ToArray();
+        var others = await db.WorkAssignmentStages
+            .Where(x => x.OrgId == Org && x.CavityCode != null && cavityCodes.Contains(x.CavityCode)
+                && x.PlanStart != null && x.PlanFinish != null
+                && (excludeAssignmentId == null || x.AssignmentId != excludeAssignmentId))
+            .ToListAsync();
+        foreach (var s in planned)
+        {
+            var cav = s.CavityCode!.Trim().ToUpperInvariant();
+            var conflict = others.FirstOrDefault(o => string.Equals(o.CavityCode, cav, StringComparison.OrdinalIgnoreCase)
+                && o.PlanStart!.Value < s.PlanFinish!.Value && o.PlanFinish!.Value > s.PlanStart!.Value);
+            if (conflict is not null)
+                throw new InvalidOperationException($"Khoang '{s.CavityCode}' đã có công đoạn {conflict.WorkType} trùng khung giờ kế hoạch {s.PlanStart:HH:mm}-{s.PlanFinish:HH:mm}.");
+        }
+    }
+
+    // Thay toàn bộ công đoạn của 1 phân công (delete olds → insert).
+    private async Task ReplaceStagesAsync(WorkAssignment wa, List<WorkStageDto> stages)
+    {
+        var olds = await db.WorkAssignmentStages.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+        db.WorkAssignmentStages.RemoveRange(olds);
+        foreach (var s in stages)
+            db.WorkAssignmentStages.Add(new WorkAssignmentStage
+            {
+                OrgId = Org, AssignmentId = wa.Id, WorkType = s.WorkType,
+                CavityCode = string.IsNullOrWhiteSpace(s.CavityCode) ? null : s.CavityCode!.Trim().ToUpperInvariant(),
+                PlanStart = s.PlanStart, PlanFinish = s.PlanFinish, ActualStart = s.ActualStart, ActualFinish = s.ActualFinish
+            });
+    }
+
+    // Thay toàn bộ KTV được phân công (delete olds → insert); WorkType mặc định SCC (sửa chữa chung).
+    private async Task ReplaceEngineersAsync(WorkAssignment wa, List<WorkEngineerDto>? engineers)
+    {
+        var olds = await db.WorkAssignmentEngineers.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+        db.WorkAssignmentEngineers.RemoveRange(olds);
+        if (engineers is null) return;
+        var seen = new HashSet<string>();
+        foreach (var e in engineers)
+        {
+            if (string.IsNullOrWhiteSpace(e.EngineerCode)) continue;
+            var code = e.EngineerCode.Trim().ToUpperInvariant();
+            var wt = NormalizeWorkType(e.WorkType) ?? WorkStages.SCC;
+            if (!seen.Add(code + "|" + wt)) continue;
+            db.WorkAssignmentEngineers.Add(new WorkAssignmentEngineer
+            {
+                OrgId = Org, AssignmentId = wa.Id, RoId = wa.RoId, EngineerCode = code, WorkType = wt
+            });
+        }
+    }
+
+    // Dựng view 1 phân công: thông tin RO + công đoạn (kèm tên) + KTV + tổng giờ kế hoạch.
+    private async Task<object> BuildAssignmentViewAsync(WorkAssignment wa)
+    {
+        var stages = await db.WorkAssignmentStages.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id)
+            .OrderBy(x => x.WorkType).ToListAsync();
+        var engs = await db.WorkAssignmentEngineers.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id)
+            .OrderBy(x => x.EngineerCode).ToListAsync();
+        var stageViews = stages.Select(s => new
+        {
+            s.WorkType, workTypeText = WorkStages.Text(s.WorkType), s.CavityCode,
+            s.PlanStart, s.PlanFinish, s.ActualStart, s.ActualFinish,
+            planHours = s.PlanStart.HasValue && s.PlanFinish.HasValue ? Math.Round((s.PlanFinish.Value - s.PlanStart.Value).TotalHours, 2) : 0d
+        });
+        var totalPlanHours = Math.Round(stages.Where(s => s.PlanStart.HasValue && s.PlanFinish.HasValue)
+            .Sum(s => (s.PlanFinish!.Value - s.PlanStart!.Value).TotalHours), 2);
+        return new
+        {
+            wa.Id, wa.RoId, wa.RoNo, wa.DealerCode, wa.WorkTypeStart, wa.WorkTypeFinish,
+            wa.CreatedAt, wa.UpdatedAt,
+            stageCount = stages.Count, totalPlanHours,
+            stages = stageViews,
+            engineers = engs.Select(e => new { e.EngineerCode, e.WorkType, workTypeText = WorkStages.Text(e.WorkType) })
         };
     }
 }

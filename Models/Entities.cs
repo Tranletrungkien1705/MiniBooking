@@ -223,6 +223,76 @@ public sealed class ReceptionForm
     public string? Note { get; set; }
 }
 
+/// <summary>Các công đoạn sửa chữa (Ser_AssignmentWork_WorkType): mỗi công đoạn có khoang + giờ kế hoạch/thực tế riêng.</summary>
+public static class WorkStages
+{
+    public const string SCC   = "SCC";   // Sửa chữa chung
+    public const string SCD   = "SCD";   // Sửa chữa đồng
+    public const string SCN   = "SCN";   // Sửa chữa nền
+    public const string SCS   = "SCS";   // Sửa chữa sơn
+    public const string SCDB  = "SCDB";  // Sửa chữa đánh bóng
+    public const string SCLR  = "SCLR";  // Sửa chữa lắp ráp
+    public const string SCKSC = "SCKSC"; // Sửa chữa KSC - Vệ sinh
+
+    /// <summary>Danh sách mã công đoạn hợp lệ (theo thứ tự Ser_AssignmentWork_WorkType).</summary>
+    public static readonly string[] All = { SCC, SCD, SCN, SCS, SCDB, SCLR, SCKSC };
+
+    /// <summary>Tên hiển thị tiếng Việt của công đoạn.</summary>
+    public static string Text(string? code) => (code ?? "").Trim().ToUpperInvariant() switch
+    {
+        SCC   => "Sửa chữa chung",
+        SCD   => "Sửa chữa đồng",
+        SCN   => "Sửa chữa nền",
+        SCS   => "Sửa chữa sơn",
+        SCDB  => "Sửa chữa đánh bóng",
+        SCLR  => "Sửa chữa lắp ráp",
+        SCKSC => "Sửa chữa KSC - Vệ sinh",
+        _     => code ?? ""
+    };
+}
+
+/// <summary>Phân công công việc sửa chữa (chuyển đổi Ser_AssignmentWork): gắn 1 lệnh sửa chữa (ROID)
+/// với kế hoạch/thực tế theo từng công đoạn (SCC/SCD/SCN/SCS/SCDB/SCLR/SCKSC), mỗi công đoạn có khoang riêng.
+/// Chặn trùng khung giờ kế hoạch trên cùng khoang (MyCheck_SerAssignmentWork_PlanDateTime_Cavity).</summary>
+public sealed class WorkAssignment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID — lệnh sửa chữa được phân công
+    public string? RoNo { get; set; }              // RONo (tiện hiển thị)
+    public string DealerCode { get; set; } = "";
+    public string? WorkTypeStart { get; set; }     // WorkTypeStart — công đoạn bắt đầu
+    public string? WorkTypeFinish { get; set; }    // WorkTypeFinish — công đoạn kết thúc
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; }
+    public List<WorkAssignmentStage> Stages { get; set; } = new();
+}
+
+/// <summary>Kế hoạch/thực tế 1 công đoạn trong phân công công việc (chuyển đổi Ser_AssignmentWork theo từng cột SCC/SCD/...).</summary>
+public sealed class WorkAssignmentStage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AssignmentId { get; set; }         // FK → WorkAssignment
+    public string WorkType { get; set; } = "";     // SCC/SCD/SCN/SCS/SCDB/SCLR/SCKSC
+    public string? CavityCode { get; set; }        // khoang (Ser_Cavity.CavityNo)
+    public DateTime? PlanStart { get; set; }       // PlanStartDTime
+    public DateTime? PlanFinish { get; set; }      // PlanFinishDTime
+    public DateTime? ActualStart { get; set; }     // ActualStartDTime
+    public DateTime? ActualFinish { get; set; }    // ActualFinishDTime
+}
+
+/// <summary>Kỹ thuật viên được phân công cho 1 lệnh sửa chữa theo công đoạn (chuyển đổi Ser_AssignmentWorkEngineer).</summary>
+public sealed class WorkAssignmentEngineer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AssignmentId { get; set; }         // FK → WorkAssignment
+    public string RoId { get; set; } = "";        // ROID
+    public string EngineerCode { get; set; } = ""; // EngineerID/EngineerNo
+    public string WorkType { get; set; } = "";     // SCC (chung) hoặc SCDS (đồng sơn)
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {
