@@ -41,6 +41,21 @@ public sealed class CareReminder
     public DateTime? ContactedAt { get; set; }
 }
 
+/// <summary>Khoang sửa chữa (chuyển đổi Ser_Cavity): cầu nâng/khoang tiếp nhận theo xưởng, có sức chứa theo khung giờ.</summary>
+public sealed class ServiceBay
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";          // CavityNo
+    public string Name { get; set; } = "";          // CavityName
+    public string BayType { get; set; } = "General"; // CavityType: General/Maintain/RO/Copper/Parking
+    public int CapacityPerSlot { get; set; } = 1;    // số xe tối đa mỗi khung giờ
+    public string DealerCode { get; set; } = "";
+    public bool Active { get; set; } = true;
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {
@@ -58,6 +73,10 @@ public sealed class Appointment
     public ApptStatus Status { get; set; } = ApptStatus.Requested;
     public string? Note { get; set; }
     public string? RoNo { get; set; }             // số RO sinh khi check-in
+    public string? BayCode { get; set; }          // khoang sửa chữa (Ser_Cavity) — gán khi xác nhận
+    public string? AppTypeCode { get; set; }      // loại cuộc hẹn (Mst_Ser_AppType)
+    public DateTime? SlotFrom { get; set; }       // khung giờ bắt đầu (AppDateTimeFrom)
+    public DateTime? SlotTo { get; set; }         // khung giờ kết thúc (AppDateTime)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? CheckedInAt { get; set; }
     public DateTime? DoneAt { get; set; }

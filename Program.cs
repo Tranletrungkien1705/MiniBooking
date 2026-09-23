@@ -81,7 +81,8 @@ app.MapPost("/api/book", async (BookDto dto, IBookingService svc) =>
     if (string.IsNullOrWhiteSpace(dto.CustomerName) || string.IsNullOrWhiteSpace(dto.Phone))
         return Results.BadRequest(new { error = "Cần CustomerName và Phone." });
     if (dto.PreferredAt == default) return Results.BadRequest(new { error = "Cần PreferredAt (thời gian mong muốn)." });
-    return Results.Ok(await svc.BookAsync(dto));
+    try { return Results.Ok(await svc.BookAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 
 app.MapGet("/api/book/{code}", async (string code, IBookingService svc) =>
@@ -96,8 +97,12 @@ app.MapGet("/api/appointments", async (IBookingService svc, string? status, stri
 
 app.MapPost("/api/appointments/{code}/confirm", async (string code, ConfirmDto dto, IBookingService svc) =>
 {
-    var r = await svc.ConfirmAsync(code, dto.Engineer);
-    return r is null ? Results.NotFound(new { code, error = "Không thấy lịch chờ xác nhận." }) : Results.Ok(r);
+    try
+    {
+        var r = await svc.ConfirmAsync(code, dto);
+        return r is null ? Results.NotFound(new { code, error = "Không thấy lịch chờ xác nhận." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
 }).RequireAuthorization();
 
 app.MapPost("/api/appointments/{code}/checkin", async (string code, CheckInDto dto, IBookingService svc) =>
@@ -130,6 +135,17 @@ app.MapPost("/api/engineers", async (AddEngineerDto dto, IBookingService svc) =>
 
 app.MapGet("/api/engineers/workload", async (string date, IBookingService svc, string? dealer) =>
     Results.Ok(await svc.EngineerWorkloadAsync(date, dealer))).RequireAuthorization();
+
+// ---- Khoang sửa chữa (Ser_Cavity): master + sức chứa theo khung giờ ----
+app.MapPost("/api/bays", async (AddBayDto dto, IBookingService svc) =>
+    string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name)
+        ? Results.BadRequest(new { error = "Cần Code và Name." }) : Results.Ok(await svc.AddBayAsync(dto))).RequireAuthorization();
+
+app.MapGet("/api/bays", async (IBookingService svc, string? dealer) =>
+    Results.Ok(await svc.ListBaysAsync(dealer))).RequireAuthorization();
+
+app.MapGet("/api/bays/availability", async (string date, IBookingService svc, string? bayCode, string? dealer) =>
+    Results.Ok(await svc.SlotAvailabilityAsync(date, bayCode, dealer))).RequireAuthorization();
 
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>

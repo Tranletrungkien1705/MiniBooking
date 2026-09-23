@@ -11,6 +11,9 @@
 <ul>
 <li><code>GET /api/appointments?status=&dealer=&date=</code> · <code>GET /api/calendar?date=</code> · <code>GET /api/stats</code></li>
 <li><code>POST /api/appointments/{code}/confirm|checkin|done|cancel</code></li>
+<li><code>POST /api/bays</code> · <code>GET /api/bays?dealer=</code> — khoang sửa chữa (Ser_Cavity)</li>
+<li><code>GET /api/bays/availability?date=&bayCode=&dealer=</code> — sức chứa còn lại theo khoang</li>
 </ul>
+<p class="muted">Xác nhận lịch có gán khoang + khung giờ; chặn trùng khung giờ trên cùng khoang (MyCheck_DateTime_Cavity).</p>
 <p class="muted">SSO: <code>/api/whoami</code>. Swagger: <a href="/swagger">/swagger</a>.</p>
 </body></html>

@@ -4,20 +4,22 @@ using MiniBooking.Models;
 
 namespace MiniBooking.Services;
 
-public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note);
-public record ConfirmDto(string? Engineer);
+public record BookDto(string CustomerName, string Phone, string? Vin, string? Plate, string? ServiceType, DateTime PreferredAt, string? DealerCode, string? Note, string? BayCode = null, string? AppTypeCode = null, DateTime? SlotTo = null);
+public record ConfirmDto(string? Engineer, string? BayCode = null, DateTime? SlotFrom = null, DateTime? SlotTo = null);
 public record CheckInDto(string? RoNo);
 public record CreateReminderDto(string CustomerName, string Phone, string? Vin, string? Plate, string? CareType, DateTime DueDate, string? Note);
 public record ContactDto(string? Note);
 public record ConvertDto(DateTime PreferredAt, string? ServiceType, string? DealerCode);
 public record AddEngineerDto(string Code, string Name, string? Skill, string? DealerCode);
+public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
+public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
 {
     Task<object> BookAsync(BookDto dto);        // công khai (khách)
     Task<object?> StatusAsync(string code);     // công khai
     Task<object> ListAsync(string? status, string? dealer, string? date);
-    Task<object?> ConfirmAsync(string code, string? engineer);
+    Task<object?> ConfirmAsync(string code, ConfirmDto dto);
     Task<object?> CheckInAsync(string code, string? roNo);
     Task<object?> DoneAsync(string code);
     Task<object?> CancelAsync(string code, bool noShow);
@@ -30,6 +32,9 @@ public interface IBookingService
     Task<object> CareStatsAsync();
     Task<object> AddEngineerAsync(AddEngineerDto dto);
     Task<object> EngineerWorkloadAsync(string date, string? dealer);
+    Task<object> AddBayAsync(AddBayDto dto);
+    Task<object> ListBaysAsync(string? dealer);
+    Task<object> SlotAvailabilityAsync(string date, string? bayCode, string? dealer);
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -41,17 +46,29 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     public async Task<object> BookAsync(BookDto dto)
     {
         var code = "AP" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99);
+        var bayCode = dto.BayCode?.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(bayCode))
+        {
+            var bay = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == bayCode && x.Active);
+            if (bay is null) throw new InvalidOperationException($"Khoang '{bayCode}' không tồn tại hoặc đã ngừng dùng.");
+            var booked = await db.Appointments.CountAsync(a => a.OrgId == Org && a.BayCode == bayCode
+                && a.PreferredAt.Date == dto.PreferredAt.Date
+                && a.Status != ApptStatus.Cancelled && a.Status != ApptStatus.NoShow);
+            if (booked >= bay.CapacityPerSlot)
+                throw new InvalidOperationException($"Khoang '{bayCode}' đã đầy trong ngày {dto.PreferredAt:yyyy-MM-dd} ({booked}/{bay.CapacityPerSlot}).");
+        }
         var a = new Appointment
         {
             OrgId = Org, Code = code, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone.Trim(),
             Vin = dto.Vin?.Trim().ToUpperInvariant(), Plate = dto.Plate?.Trim(),
             ServiceType = string.IsNullOrWhiteSpace(dto.ServiceType) ? "Bảo dưỡng" : dto.ServiceType!.Trim(),
             PreferredAt = dto.PreferredAt, DealerCode = dto.DealerCode?.Trim() ?? "", Note = dto.Note,
+            BayCode = bayCode, AppTypeCode = dto.AppTypeCode?.Trim(),
             Status = ApptStatus.Requested
         };
         db.Appointments.Add(a);
         await db.SaveChangesAsync();
-        return new { a.Code, status = a.Status.ToString(), statusText = Text(a.Status), a.PreferredAt };
+        return new { a.Code, status = a.Status.ToString(), statusText = Text(a.Status), a.PreferredAt, a.BayCode, a.AppTypeCode };
     }
 
     public async Task<object?> StatusAsync(string code)
@@ -59,7 +76,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         code = code.Trim().ToUpperInvariant();
         var a = await db.Appointments.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Code == code);
         if (a is null) return null;
-        return new { a.Code, a.CustomerName, a.ServiceType, a.PreferredAt, status = a.Status.ToString(), statusText = Text(a.Status), a.Engineer, a.RoNo };
+        return new { a.Code, a.CustomerName, a.ServiceType, a.PreferredAt, status = a.Status.ToString(), statusText = Text(a.Status), a.Engineer, a.RoNo, a.BayCode, a.AppTypeCode };
     }
 
     public async Task<object> ListAsync(string? status, string? dealer, string? date)
@@ -71,7 +88,7 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         var items = await q.OrderBy(a => a.PreferredAt).Take(500).Select(a => new
         {
             a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
-            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status), a.RoNo
+            a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status), a.RoNo, a.BayCode, a.AppTypeCode
         }).ToListAsync();
         return new { count = items.Count, items };
     }
@@ -82,13 +99,46 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         return await db.Appointments.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
     }
 
-    public async Task<object?> ConfirmAsync(string code, string? engineer)
+    public async Task<object?> ConfirmAsync(string code, ConfirmDto dto)
     {
         var a = await Get(code);
         if (a is null || a.Status != ApptStatus.Requested) return null;
-        a.Status = ApptStatus.Confirmed; a.Engineer = engineer;
+
+        // Gán khoang + khung giờ khi xác nhận (Ser_App: AppDateTimeFrom/AppTimeFrom → AppDateTime/AppTime).
+        var bayCode = (dto.BayCode ?? a.BayCode)?.Trim().ToUpperInvariant();
+        var slotFrom = dto.SlotFrom ?? a.PreferredAt;
+        var slotTo = dto.SlotTo ?? a.SlotTo ?? slotFrom.AddHours(1);
+        if (slotTo <= slotFrom) slotTo = slotFrom.AddHours(1);
+
+        if (!string.IsNullOrWhiteSpace(bayCode))
+        {
+            var bay = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == bayCode && x.Active);
+            if (bay is null) throw new InvalidOperationException($"Khoang '{bayCode}' không tồn tại hoặc đã ngừng dùng.");
+            // MyCheck_DateTime_Cavity: chặn trùng khung giờ trên cùng khoang (bỏ qua lịch đã hủy/không đến).
+            var conflict = await FindBayConflictAsync(bayCode, slotFrom, slotTo, a.Id);
+            if (conflict is not null)
+                throw new InvalidOperationException($"Khoang '{bayCode}' đã có lịch {conflict} trùng khung giờ {slotFrom:HH:mm}-{slotTo:HH:mm}.");
+        }
+
+        a.Status = ApptStatus.Confirmed; a.Engineer = dto.Engineer;
+        a.BayCode = bayCode; a.SlotFrom = slotFrom; a.SlotTo = slotTo;
         await db.SaveChangesAsync();
-        return new { a.Code, status = a.Status.ToString(), a.Engineer };
+        return new { a.Code, status = a.Status.ToString(), a.Engineer, a.BayCode, a.SlotFrom, a.SlotTo };
+    }
+
+    // Trả về mô tả lịch trùng (nếu có) trên cùng khoang: dùng công thức giao khung giờ của Ser_App.
+    private async Task<string?> FindBayConflictAsync(string bayCode, DateTime from, DateTime to, long excludeId)
+    {
+        var cands = await db.Appointments.Where(x => x.OrgId == Org && x.BayCode == bayCode && x.Id != excludeId
+            && x.Status != ApptStatus.Cancelled && x.Status != ApptStatus.NoShow).ToListAsync();
+        foreach (var c in cands)
+        {
+            var cFrom = c.SlotFrom ?? c.PreferredAt;
+            var cTo = c.SlotTo ?? cFrom.AddHours(1);
+            if (cFrom < to && cTo > from)   // giao nhau
+                return $"{c.Code} ({cFrom:HH:mm}-{cTo:HH:mm})";
+        }
+        return null;
     }
 
     public async Task<object?> CheckInAsync(string code, string? roNo)
@@ -239,5 +289,62 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             booked = await q.CountAsync(r => r.Status == "Booked"),
             overdue = await q.CountAsync(r => r.Status == "Pending" && r.DueDate.Date < today)
         };
+    }
+
+    // ===== Khoang sửa chữa (Ser_Cavity) + sức chứa theo khung giờ =====
+    public async Task<object> AddBayAsync(AddBayDto dto)
+    {
+        var code = dto.Code.Trim().ToUpperInvariant();
+        var b = await db.ServiceBays.FirstOrDefaultAsync(x => x.OrgId == Org && x.Code == code);
+        if (b is null)
+        {
+            b = new ServiceBay { OrgId = Org, Code = code, Name = dto.Name.Trim(), BayType = string.IsNullOrWhiteSpace(dto.BayType) ? "General" : dto.BayType!.Trim(), CapacityPerSlot = Math.Max(1, dto.CapacityPerSlot ?? 1), DealerCode = dto.DealerCode?.Trim() ?? "", Note = dto.Note, Active = true };
+            db.ServiceBays.Add(b);
+        }
+        else
+        {
+            b.Name = dto.Name.Trim();
+            b.BayType = string.IsNullOrWhiteSpace(dto.BayType) ? b.BayType : dto.BayType!.Trim();
+            b.CapacityPerSlot = Math.Max(1, dto.CapacityPerSlot ?? b.CapacityPerSlot);
+            b.DealerCode = dto.DealerCode?.Trim() ?? b.DealerCode;
+            if (dto.Note != null) b.Note = dto.Note;
+        }
+        await db.SaveChangesAsync();
+        return new { b.Code, b.Name, b.BayType, b.CapacityPerSlot, b.DealerCode, b.Active };
+    }
+
+    public async Task<object> ListBaysAsync(string? dealer)
+    {
+        var q = db.ServiceBays.Where(x => x.OrgId == Org);
+        if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+        var items = await q.OrderBy(x => x.Code).Select(x => new
+        {
+            x.Code, x.Name, x.BayType, x.CapacityPerSlot, x.DealerCode, x.Active, x.Note
+        }).ToListAsync();
+        return new { count = items.Count, items };
+    }
+
+    // Sức chứa còn lại theo từng khoang trong 1 ngày: đếm lịch chưa hủy/không đến theo giờ.
+    public async Task<object> SlotAvailabilityAsync(string date, string? bayCode, string? dealer)
+    {
+        DateTime.TryParse(date, out var d);
+        var baysQ = db.ServiceBays.Where(x => x.OrgId == Org && x.Active);
+        if (!string.IsNullOrWhiteSpace(bayCode)) baysQ = baysQ.Where(x => x.Code == bayCode.ToUpperInvariant());
+        if (!string.IsNullOrWhiteSpace(dealer)) baysQ = baysQ.Where(x => x.DealerCode == dealer);
+        var bays = await baysQ.OrderBy(x => x.Code).ToListAsync();
+
+        var appts = await db.Appointments.Where(a => a.OrgId == Org && a.PreferredAt.Date == d.Date
+            && a.Status != ApptStatus.Cancelled && a.Status != ApptStatus.NoShow).ToListAsync();
+
+        var items = bays.Select(b =>
+        {
+            var booked = appts.Count(a => a.BayCode == b.Code);
+            return new
+            {
+                b.Code, b.Name, b.BayType, b.CapacityPerSlot,
+                booked, available = Math.Max(0, b.CapacityPerSlot - booked)
+            };
+        });
+        return new { date = d.ToString("yyyy-MM-dd"), bays = bays.Count, items };
     }
 }

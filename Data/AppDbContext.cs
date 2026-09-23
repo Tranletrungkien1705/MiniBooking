@@ -9,11 +9,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Appointment> Appointments => Set<Appointment>();
     public DbSet<CareReminder> CareReminders => Set<CareReminder>();
     public DbSet<Engineer> Engineers => Set<Engineer>();
+    public DbSet<ServiceBay> ServiceBays => Set<ServiceBay>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
         b.Entity<Appointment>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
         b.Entity<Appointment>().Property(x => x.Status).HasConversion<int>();
+        b.Entity<ServiceBay>().HasIndex(x => new { x.OrgId, x.Code }).IsUnique();
     }
 }
