@@ -293,6 +293,42 @@ app.MapGet("/api/repair-orders/{roId}/status-history", async (string roId, IBook
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// ---- Công việc trong lệnh sửa chữa (Ser_ROServiceItems): dòng công việc + trạng thái hoàn thành ----
+app.MapPost("/api/repair-orders/{roId}/services", async (string roId, AddRoServiceItemDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Cần SerCode." });
+    try
+    {
+        var r = await svc.AddRoServiceItemAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/repair-orders/{roId}/services", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.ListRoServiceItemsAsync(roId);
+    return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapDelete("/api/repair-orders/{roId}/services/{itemId:long}", async (string roId, long itemId, IBookingService svc) =>
+{
+    var r = await svc.RemoveRoServiceItemAsync(roId, itemId);
+    return r is null ? Results.NotFound(new { roId, itemId, error = "Không thấy công việc của lệnh sửa chữa." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_RO_Update_ServiceItemsStatusRODL: cập nhật trạng thái xong của các dòng công việc;
+// khi mọi dòng đã xong → Ser_RO.ServiceStatus = Active.
+app.MapPost("/api/repair-orders/{roId}/services/status", async (string roId, UpdateRoServiceItemsStatusDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdateRoServiceItemsStatusAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {

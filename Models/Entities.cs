@@ -171,6 +171,34 @@ public sealed class RepairOrder
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? LinkedAt { get; set; }        // thời điểm gắn cuộc hẹn
     public DateTime? StatusChangedAt { get; set; } // LogLUDateTime — lần đổi trạng thái gần nhất
+    // Ser_RO.ServiceStatus: 1 = mọi công việc của RO đã hoàn thành, 0 = còn công việc chưa xong.
+    // Tự động cập nhật khi đổi trạng thái từng dòng công việc (Ser_RO_Update_ServiceItemsStatusRODL).
+    public bool ServiceStatus { get; set; }
+}
+
+/// <summary>Dòng công việc trong lệnh sửa chữa (chuyển đổi Ser_ROServiceItems): mỗi công việc khách
+/// đồng ý sửa, kèm loại công việc (ROType), đối tượng thanh toán (ExpenseType), hệ số/đơn giá/VAT và
+/// trạng thái hoàn thành riêng (Status: 0/null = chưa xong, 1 = đã xong). Khi mọi dòng của 1 RO đã xong
+/// thì Ser_RO.ServiceStatus chuyển sang Active (Ser_RO_Update_ServiceItemsStatusRODL).</summary>
+public sealed class RepairOrderServiceItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID — lệnh sửa chữa
+    public string SerCode { get; set; } = "";     // SerID/SerCode — mã công việc (Ser_Mst_Service)
+    public string SerName { get; set; } = "";     // tên công việc
+    public string ROType { get; set; } = "";      // ROType — loại công việc (BDD/SCC/SCD/SCS/PDI/SPK)
+    public string ExpenseType { get; set; } = ""; // ExpenseType — đối tượng thanh toán (ROREPAIR/ROWARRANTY/ROINSURANCE/LOCAL)
+    public decimal StdManHour { get; set; }        // giờ công định mức
+    public decimal Factor { get; set; } = 1m;      // Factor — hệ số giá
+    public decimal Price { get; set; }             // Price — đơn giá trước VAT
+    public decimal VAT { get; set; }               // VAT — % thuế
+    public bool FlagAccrual { get; set; }          // FlagAccrual — phát sinh ngoài báo giá ban đầu
+    public bool Status { get; set; }               // Status: false = chưa xong, true = đã xong
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? StatusChangedAt { get; set; } // LogLUDateTime — lần đổi trạng thái gần nhất
+    public string? StatusChangedBy { get; set; }   // LogLUBy — người đổi trạng thái
 }
 
 /// <summary>Vòng đời lệnh sửa chữa (chuyển đổi Ser_RO_Stage): máy trạng thái 12 bước của Ser_RO.

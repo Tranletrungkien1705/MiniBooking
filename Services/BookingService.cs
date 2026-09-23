@@ -18,6 +18,11 @@ public record AddCavityTypeDto(string Code, string Name);
 public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
 public record AddPartItemDto(string PartCode, string? PartName, string? Unit, decimal? Quantity, decimal? InventoryQuantity, string? Note);
 public record AddRepairOrderDto(string RoId, string? RoNo, string? DealerCode, string? CusName, string? CusTel, string? PlateNo, string? FrameNo, string? CusRequest, string? Status);
+// Ser_ROServiceItems: dòng công việc trong lệnh sửa chữa (loại công việc + đối tượng thanh toán + giá/VAT + trạng thái xong).
+public record AddRoServiceItemDto(string SerCode, string? SerName, string? ROType, string? ExpenseType, decimal? StdManHour, decimal? Factor, decimal? Price, decimal? VAT, bool? FlagAccrual, string? Note);
+// Ser_RO_Update_ServiceItemsStatusRODL: cập nhật trạng thái hoàn thành của các dòng công việc trong RO.
+public record RoServiceItemStatusDto(string SerCode, bool Status);
+public record UpdateRoServiceItemsStatusDto(List<RoServiceItemStatusDto> Items, string? ChangedBy);
 // Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage.
 public record ChangeRoStatusDto(string ToStatus, string? Note, string? ChangedBy);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
@@ -85,6 +90,10 @@ public interface IBookingService
     Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
     Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto);  // chuyển trạng thái RO (Ser_RO_UpdateStatus)
     Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
+    Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto);       // thêm dòng công việc vào RO (Ser_ROServiceItems)
+    Task<object?> ListRoServiceItemsAsync(string roId);                              // danh sách công việc của RO + tổng tiền
+    Task<object?> RemoveRoServiceItemAsync(string roId, long itemId);                // bỏ 1 dòng công việc khỏi RO
+    Task<object?> UpdateRoServiceItemsStatusAsync(string roId, UpdateRoServiceItemsStatusDto dto); // cập nhật trạng thái xong + tự đổi ServiceStatus của RO
     Task<object> CreatePostCareAsync(CreatePostCareDto dto);                 // tạo phiếu chăm sóc sau dịch vụ 72h (Ser_CustomerCare72h)
     Task<object> ListPostCaresAsync(string? status, string? dealer, string? dueBefore);  // danh sách phiếu chăm sóc 72h
     Task<object?> GetPostCareAsync(string cusCareId);                        // chi tiết 1 phiếu chăm sóc 72h
@@ -771,6 +780,137 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             toStatusText = RoStages.Text(x.ToStatus)
         });
         return new { ro.RoId, status = ro.Status, statusText = RoStages.Text(ro.Status), count = items.Count, items = rows };
+    }
+
+    // ===== Công việc trong lệnh sửa chữa (Ser_ROServiceItems) =====
+    // Thêm 1 dòng công việc vào RO; dedupe theo SerCode. Validate theo Ser_RO_CreateRODL:
+    // SerCode/ROType/ExpenseType bắt buộc; BDD/PDI chỉ được ROREPAIR hoặc LOCAL.
+    public async Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        var serCode = (dto.SerCode ?? "").Trim();
+        if (serCode.Length == 0) throw new InvalidOperationException("Cần SerCode (mã công việc).");
+        var roType = (dto.ROType ?? "").Trim().ToUpperInvariant();
+        if (roType.Length == 0) throw new InvalidOperationException("Cần ROType (loại công việc).");
+        if (!WorkTypes.All.Contains(roType))
+            throw new InvalidOperationException($"ROType '{roType}' không hợp lệ. Hợp lệ: {string.Join('/', WorkTypes.All)}.");
+        var expenseType = (dto.ExpenseType ?? "").Trim().ToUpperInvariant();
+        if (expenseType.Length == 0) throw new InvalidOperationException("Cần ExpenseType (đối tượng thanh toán).");
+        if (!ExpenseTypes.All.Contains(expenseType))
+            throw new InvalidOperationException($"ExpenseType '{expenseType}' không hợp lệ. Hợp lệ: {string.Join('/', ExpenseTypes.All)}.");
+        // Ser_RO_Create_InvalidService_ExpenseType: BDD/PDI chỉ được ROREPAIR hoặc LOCAL.
+        if ((roType == WorkTypes.BDD || roType == WorkTypes.PDI) && !ExpenseTypes.IsValidForService(expenseType))
+            throw new InvalidOperationException($"Công việc {roType} chỉ được đối tượng thanh toán {ExpenseTypes.Repair} hoặc {ExpenseTypes.Local}.");
+
+        var item = await db.RepairOrderServiceItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId && x.SerCode == serCode);
+        if (item is null)
+        {
+            item = new RepairOrderServiceItem { OrgId = Org, RoId = roId, SerCode = serCode };
+            db.RepairOrderServiceItems.Add(item);
+        }
+        item.SerName = dto.SerName?.Trim() ?? item.SerName;
+        item.ROType = roType;
+        item.ExpenseType = expenseType;
+        item.StdManHour = dto.StdManHour ?? item.StdManHour;
+        item.Factor = dto.Factor ?? item.Factor;
+        item.Price = dto.Price ?? item.Price;
+        item.VAT = dto.VAT ?? item.VAT;
+        item.FlagAccrual = dto.FlagAccrual ?? item.FlagAccrual;
+        if (dto.Note != null) item.Note = dto.Note;
+        await db.SaveChangesAsync();
+        return new { item.Id, item.RoId, item.SerCode, item.SerName, item.ROType, item.ExpenseType, item.StdManHour, item.Factor, item.Price, item.VAT, item.FlagAccrual, item.Status };
+    }
+
+    // Danh sách công việc của 1 RO + tổng tiền theo đối tượng thanh toán + cờ ServiceStatus của RO.
+    public async Task<object?> ListRoServiceItemsAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        var items = await db.RepairOrderServiceItems.Where(x => x.OrgId == Org && x.RoId == roId)
+            .OrderBy(x => x.Id)
+            .Select(x => new { x.Id, x.SerCode, x.SerName, x.ROType, x.ExpenseType, x.StdManHour, x.Factor, x.Price, x.VAT, x.FlagAccrual, x.Status, x.Note, x.StatusChangedAt, x.StatusChangedBy })
+            .ToListAsync();
+        var rows = items.Select(x => new
+        {
+            x.Id, x.SerCode, x.SerName, x.ROType, x.ExpenseType, x.StdManHour, x.Factor, x.Price, x.VAT, x.FlagAccrual, x.Status, x.Note, x.StatusChangedAt, x.StatusChangedBy,
+            roTypeText = WorkStages.Text(x.ROType),
+            amount = x.StdManHour * x.Factor * x.Price,
+            amountVat = x.StdManHour * x.Factor * x.Price * (1 + x.VAT / 100m)
+        }).ToList();
+        return new
+        {
+            ro.RoId, ro.Status, statusText = RoStages.Text(ro.Status), ro.ServiceStatus,
+            count = rows.Count,
+            doneCount = rows.Count(x => x.Status),
+            totalAmount = rows.Sum(x => x.amount),
+            totalAmountVat = rows.Sum(x => x.amountVat),
+            items = rows
+        };
+    }
+
+    // Bỏ 1 dòng công việc khỏi RO; sau đó tính lại ServiceStatus của RO.
+    public async Task<object?> RemoveRoServiceItemAsync(string roId, long itemId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        var item = await db.RepairOrderServiceItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId && x.Id == itemId);
+        if (item is null) return null;
+        db.RepairOrderServiceItems.Remove(item);
+        await db.SaveChangesAsync();
+        await RecalcRoServiceStatusAsync(ro);
+        return new { ro.RoId, removedItemId = itemId, ro.ServiceStatus };
+    }
+
+    // Ser_RO_Update_ServiceItemsStatusRODL: cập nhật trạng thái hoàn thành của các dòng công việc.
+    // Sau khi cập nhật, nếu MỌI dòng của RO đã xong → Ser_RO.ServiceStatus = Active (true), ngược lại false.
+    public async Task<object?> UpdateRoServiceItemsStatusAsync(string roId, UpdateRoServiceItemsStatusDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        if (dto.Items is null || dto.Items.Count == 0)
+            throw new InvalidOperationException("Cần danh sách Items (SerCode + Status).");
+
+        var now = DateTime.Now;
+        var items = await db.RepairOrderServiceItems.Where(x => x.OrgId == Org && x.RoId == roId).ToListAsync();
+        var byCode = items.ToDictionary(x => x.SerCode, StringComparer.OrdinalIgnoreCase);
+        int updated = 0;
+        foreach (var row in dto.Items)
+        {
+            var code = (row.SerCode ?? "").Trim();
+            if (code.Length == 0) continue;
+            if (!byCode.TryGetValue(code, out var item))
+                throw new InvalidOperationException($"Công việc '{code}' không thuộc lệnh sửa chữa '{roId}'.");
+            item.Status = row.Status;
+            item.StatusChangedAt = now;
+            item.StatusChangedBy = dto.ChangedBy;
+            updated++;
+        }
+        await db.SaveChangesAsync();
+        await RecalcRoServiceStatusAsync(ro);
+        return new
+        {
+            ro.RoId, updated, ro.ServiceStatus,
+            doneCount = items.Count(x => x.Status), total = items.Count,
+            allDone = ro.ServiceStatus
+        };
+    }
+
+    // Tính lại Ser_RO.ServiceStatus: true khi mọi dòng công việc đã xong (hoặc RO chưa có dòng nào).
+    private async Task RecalcRoServiceStatusAsync(RepairOrder ro)
+    {
+        var items = await db.RepairOrderServiceItems.Where(x => x.OrgId == Org && x.RoId == ro.RoId).ToListAsync();
+        var allDone = items.Count == 0 || items.All(x => x.Status);
+        if (ro.ServiceStatus != allDone)
+        {
+            ro.ServiceStatus = allDone;
+            await db.SaveChangesAsync();
+        }
     }
 
     // ===== Chăm sóc KH sau dịch vụ 72h (Ser_CustomerCare72h) =====
