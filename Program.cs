@@ -337,6 +337,13 @@ app.MapGet("/api/repair-orders/{roId}/status-history", async (string roId, IBook
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// Ser_RO_GetForSerAppDL: lấy dữ liệu lệnh sửa chữa để tạo lịch hẹn (header RO + công việc + phụ tùng cần).
+app.MapGet("/api/repair-orders/{roId}/for-appointment", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.GetRepairOrderForAppointmentAsync(roId);
+    return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Công việc trong lệnh sửa chữa (Ser_ROServiceItems): dòng công việc + trạng thái hoàn thành ----
 app.MapPost("/api/repair-orders/{roId}/services", async (string roId, AddRoServiceItemDto dto, IBookingService svc) =>
 {

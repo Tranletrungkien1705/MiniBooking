@@ -103,6 +103,7 @@ public interface IBookingService
     Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
     Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto);  // chuyển trạng thái RO (Ser_RO_UpdateStatus)
     Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
+    Task<object?> GetRepairOrderForAppointmentAsync(string roId);            // dữ liệu RO để tạo lịch hẹn (Ser_RO_GetForSerAppDL)
     Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto);       // thêm dòng công việc vào RO (Ser_ROServiceItems)
     Task<object?> ListRoServiceItemsAsync(string roId);                              // danh sách công việc của RO + tổng tiền
     Task<object?> RemoveRoServiceItemAsync(string roId, long itemId);                // bỏ 1 dòng công việc khỏi RO
@@ -886,6 +887,39 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             toStatusText = RoStages.Text(x.ToStatus)
         });
         return new { ro.RoId, status = ro.Status, statusText = RoStages.Text(ro.Status), count = items.Count, items = rows };
+    }
+
+    // Ser_RO_GetForSerAppDL: lấy dữ liệu 1 lệnh sửa chữa để TẠO LỊCH HẸN (Ser_App) từ RO.
+    // Trả về header RO (CusID/CarID/ROID/RONo/CusRequest) + danh sách công việc + phụ tùng
+    // (phụ tùng lấy Quantity = NEED — số lượng cần theo RO) để điền sẵn form đặt lịch.
+    // Chặn khi RO đã gắn cuộc hẹn (Ser_RO.AppId) — không tạo trùng lịch cho cùng 1 RO.
+    public async Task<object?> GetRepairOrderForAppointmentAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        var services = await db.RepairOrderServiceItems.Where(x => x.OrgId == Org && x.RoId == roId)
+            .OrderBy(x => x.Id)
+            .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.Note }).ToListAsync();
+
+        // Phụ tùng của RO: dùng Quantity làm số lượng cần (NEED) để điền sẵn lịch hẹn.
+        var parts = await db.AppPartItems.Where(x => x.OrgId == Org && x.AppCode == roId)
+            .OrderBy(x => x.PartCode)
+            .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Quantity, x.InventoryQuantity, x.Note }).ToListAsync();
+
+        return new
+        {
+            // Header RO — ánh xạ sang các trường Ser_App khi tạo lịch hẹn.
+            ro.RoId, ro.RoNo, ro.DealerCode, ro.CusName, ro.CusTel, ro.PlateNo, ro.FrameNo, ro.CusRequest,
+            ro.Status, statusText = RoStages.Text(ro.Status),
+            // Cờ cho biết RO đã gắn cuộc hẹn chưa (Ser_RO.AppId) — nếu đã gắn thì không tạo lịch mới.
+            linked = !string.IsNullOrWhiteSpace(ro.AppCode), ro.AppCode,
+            serviceCount = services.Count,
+            partCount = parts.Count,
+            serviceItems = services,
+            partItems = parts
+        };
     }
 
     // ===== Công việc trong lệnh sửa chữa (Ser_ROServiceItems) =====
