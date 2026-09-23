@@ -32,6 +32,9 @@ public record RoServiceItemStatusDto(string SerCode, bool Status);
 public record UpdateRoServiceItemsStatusDto(List<RoServiceItemStatusDto> Items, string? ChangedBy);
 // Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage.
 public record ChangeRoStatusDto(string ToStatus, string? Note, string? ChangedBy);
+// SerROToRORejectStatusDL / SerROController.UpdateStatusToRejectRODL: hủy/từ chối lệnh sửa chữa
+// (bắt buộc RejectDate + RejectNote; ghi lịch sử REJ; xóa phân công công việc của RO).
+public record RejectRepairOrderDto(string RejectDate, string RejectNote, string? ChangedBy);
 // Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của lệnh sửa chữa (kèm lý do).
 public record UpdatePlannedDeliveryDateDto(string PlanedDeliveryDate, string? Remark, string? ChangedBy);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
@@ -129,6 +132,7 @@ public interface IBookingService
     Task<object?> GetRepairOrderAsync(string roId);                          // chi tiết 1 lệnh sửa chữa
     Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
     Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto);  // chuyển trạng thái RO (Ser_RO_UpdateStatus)
+    Task<object?> RejectRepairOrderAsync(string roId, RejectRepairOrderDto dto);    // hủy/từ chối RO (SerROToRORejectStatusDL)
     Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
     Task<object?> UpdatePlannedDeliveryDateAsync(string roId, UpdatePlannedDeliveryDateDto dto);  // lưu ngày giao xe dự kiến (Ser_RO_UpdatePlanedDeliveryDateDL)
     Task<object?> GetPlannedDeliveryDateHistoryAsync(string roId);           // lịch sử ngày giao xe dự kiến (Ser_Ro_PlanedDeliveryDate_His)
@@ -1011,6 +1015,61 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         });
         await db.SaveChangesAsync();
         return new { ro.RoId, fromStatus = from, status = ro.Status, statusText = RoStages.Text(ro.Status), group = RoStages.Group(ro.Status), ro.StatusChangedAt };
+    }
+
+    // SerROToRORejectStatusDL (SerROController.UpdateStatusToRejectRODL): hủy/từ chối lệnh sửa chữa.
+    // Quy tắc:
+    //  - ROID/RejectDate/RejectNote bắt buộc; RejectDate phải là ngày hợp lệ; RO phải tồn tại.
+    //  - Nếu RO đã ở trạng thái REJ → lỗi (SerRO_ROIsReject).
+    //  - Nếu RO đang RPRD/PAID/FNS/CEND → không cho hủy (SerRO_NotUpdateROReject).
+    //  - Đặt Status = REJ, ghi lịch sử (Ser_ROHistory) và XÓA phân công công việc của RO
+    //    (Ser_AssignmentWork + Ser_AssignmentWorkEngineer).
+    public async Task<object?> RejectRepairOrderAsync(string roId, RejectRepairOrderDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(dto.RejectDate) || !DateTime.TryParse(dto.RejectDate, out var rejectDate))
+            throw new InvalidOperationException("Cần RejectDate (ngày hủy) hợp lệ.");
+        if (string.IsNullOrWhiteSpace(dto.RejectNote))
+            throw new InvalidOperationException("Cần RejectNote (lý do hủy).");
+
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        var from = (ro.Status ?? "").Trim().ToUpperInvariant();
+        if (from == RoStages.RejectRO)
+            throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đã ở trạng thái Hủy / từ chối.");
+        if (from is RoStages.Repaired or RoStages.Paid or RoStages.Finished or RoStages.CheckEnd)
+            throw new InvalidOperationException(
+                $"Lệnh sửa chữa '{roId}' đang ở {from} ({RoStages.Text(from)}), không thể hủy.");
+
+        ro.Status = RoStages.RejectRO;
+        ro.StatusChangedAt = DateTime.Now;
+        db.RepairOrderStatusHistories.Add(new RepairOrderStatusHistory
+        {
+            OrgId = Org, RoId = ro.RoId, FromStatus = from, ToStatus = RoStages.RejectRO,
+            Note = dto.RejectNote.Trim(), ChangedBy = dto.ChangedBy, ChangedAt = rejectDate
+        });
+
+        // Xóa phân công công việc của RO (Ser_AssignmentWork + Ser_AssignmentWorkEngineer).
+        var wa = await db.WorkAssignments.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        int removedStages = 0, removedEngineers = 0;
+        if (wa is not null)
+        {
+            var stages = await db.WorkAssignmentStages.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+            var engs = await db.WorkAssignmentEngineers.Where(x => x.OrgId == Org && x.AssignmentId == wa.Id).ToListAsync();
+            removedStages = stages.Count; removedEngineers = engs.Count;
+            db.WorkAssignmentStages.RemoveRange(stages);
+            db.WorkAssignmentEngineers.RemoveRange(engs);
+            db.WorkAssignments.Remove(wa);
+        }
+
+        await db.SaveChangesAsync();
+        return new
+        {
+            ro.RoId, fromStatus = from, status = ro.Status, statusText = RoStages.Text(ro.Status),
+            group = RoStages.Group(ro.Status), rejectDate, rejectNote = dto.RejectNote.Trim(),
+            ro.StatusChangedAt, removedAssignment = wa is not null, removedStages, removedEngineers
+        };
     }
 
     // Lịch sử đổi trạng thái của 1 lệnh sửa chữa (Ser_ROHistory).

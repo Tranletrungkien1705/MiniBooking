@@ -344,6 +344,18 @@ app.MapGet("/api/repair-orders/{roId}/status-history", async (string roId, IBook
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// SerROToRORejectStatusDL: hủy/từ chối lệnh sửa chữa (bắt buộc RejectDate + RejectNote;
+// chặn khi RO đã RPRD/PAID/FNS/CEND; ghi lịch sử REJ + xóa phân công công việc của RO).
+app.MapPost("/api/repair-orders/{roId}/reject", async (string roId, RejectRepairOrderDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.RejectRepairOrderAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
 // Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của lệnh sửa chữa (kèm lý do).
 app.MapPost("/api/repair-orders/{roId}/planned-delivery-date", async (string roId, UpdatePlannedDeliveryDateDto dto, IBookingService svc) =>
 {
