@@ -16,8 +16,10 @@
 <li><code>GET /api/bays/availability?date=&bayCode=&dealer=</code> — sức chứa còn lại theo khoang</li>
 <li><code>POST /api/app-types</code> · <code>GET /api/app-types?active=</code> — loại cuộc hẹn (Mst_Ser_AppType)</li>
 <li><code>POST /api/cavity-types</code> · <code>GET /api/cavity-types?active=</code> — loại khoang sửa chữa (Mst_Compartment / Ser_Cavity.CavityType)</li>
+<li><code>POST /api/appointments/{code}/services</code> · <code>GET /api/appointments/{code}/services</code> · <code>DELETE /api/appointments/{code}/services/{itemId}</code> — dịch vụ đăng ký kèm lịch hẹn (Ser_AppServiceItems)</li>
 </ul>
 <p class="muted">Xác nhận lịch có gán khoang + khung giờ; chặn trùng khung giờ trên cùng khoang (MyCheck_DateTime_Cavity). Không hủy được lịch đã tiếp nhận (Ser_App_UpdateStatusX). Ràng buộc khoang theo loại dịch vụ: bảo dưỡng→BDN, sửa chữa/bảo hành→SCC, đồng→KD, sơn→KS/BS (Ser_Cavity.CavityType).</p>
 <p class="muted">Gọi xác nhận trước giờ hẹn (Ser_CustomerCare72h): lịch Chờ xác nhận → <code>contact</code> → Đã liên hệ &amp; Chưa xác nhận (AppStatus=5, kết quả Confirmed/NoAnswer/Rejected) → <code>confirm</code> → Đã xác nhận.</p>
+<p class="muted">Dịch vụ kèm lịch hẹn (Ser_AppServiceItems): gán công việc + giờ công chuẩn (StdManHour) vào lịch; tổng giờ công ước lượng thời lượng. Đặt lịch chặn thời gian đã qua và giờ kết thúc ≤ giờ bắt đầu (SerAppCreateDL_InvaliddtDateTimeFrom/To).</p>
 <p class="muted">SSO: <code>/api/whoami</code>. Swagger: <a href="/swagger">/swagger</a>.</p>
 </body></html>

@@ -122,6 +122,20 @@ public static class CavityRules
     }
 }
 
+/// <summary>Dịch vụ đăng ký kèm lịch hẹn (chuyển đổi Ser_AppServiceItems): danh sách công việc
+/// khách yêu cầu khi đặt lịch, kèm giờ công chuẩn (StdManHour) để ước lượng thời lượng.</summary>
+public sealed class AppServiceItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppCode { get; set; } = "";     // mã lịch hẹn (Ser_App.Code)
+    public string SerCode { get; set; } = "";     // mã công việc (Ser_Mst_Service.SerCode)
+    public string SerName { get; set; } = "";     // tên công việc
+    public decimal StdManHour { get; set; }        // giờ công chuẩn
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

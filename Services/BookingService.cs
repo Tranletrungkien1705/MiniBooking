@@ -15,6 +15,7 @@ public record AddEngineerDto(string Code, string Name, string? Skill, string? De
 public record AddBayDto(string Code, string Name, string? BayType, int? CapacityPerSlot, string? DealerCode, string? Note);
 public record AddAppTypeDto(string Code, string Name);
 public record AddCavityTypeDto(string Code, string Name);
+public record AddServiceItemDto(string SerCode, string? SerName, decimal? StdManHour, string? Note);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 
 public interface IBookingService
@@ -44,6 +45,9 @@ public interface IBookingService
     Task<object> ListAppTypesAsync(bool? active);
     Task<object> AddCavityTypeAsync(AddCavityTypeDto dto);
     Task<object> ListCavityTypesAsync(bool? active);
+    Task<object?> AddServiceItemAsync(string code, AddServiceItemDto dto);   // gán dịch vụ kèm lịch hẹn (Ser_AppServiceItems)
+    Task<object?> ListServiceItemsAsync(string code);                        // danh sách dịch vụ của lịch hẹn
+    Task<object?> RemoveServiceItemAsync(string code, long itemId);          // bỏ 1 dịch vụ khỏi lịch hẹn
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -56,6 +60,13 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
     {
         var code = "AP" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99);
         var serviceType = string.IsNullOrWhiteSpace(dto.ServiceType) ? "Bảo dưỡng" : dto.ServiceType!.Trim();
+
+        // SerAppCreateDL_InvaliddtDateTimeFrom: không cho đặt lịch ở thời điểm đã qua.
+        if (dto.PreferredAt < DateTime.Now)
+            throw new InvalidOperationException($"Thời gian hẹn {dto.PreferredAt:yyyy-MM-dd HH:mm} đã qua, vui lòng chọn thời gian khác.");
+        // SerAppCreateDL_InvaliddtDateTimeTo: giờ kết thúc (nếu có) phải sau giờ bắt đầu.
+        if (dto.SlotTo.HasValue && dto.SlotTo.Value <= dto.PreferredAt)
+            throw new InvalidOperationException($"Giờ kết thúc {dto.SlotTo:HH:mm} phải sau giờ bắt đầu {dto.PreferredAt:HH:mm}.");
 
         // SerAppCreateDL_AppTypeCodeNotEmpty: loại cuộc hẹn phải có và tồn tại trong master Mst_Ser_AppType.
         var appTypeCode = dto.AppTypeCode?.Trim().ToUpperInvariant();
@@ -448,5 +459,57 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         if (active.HasValue) q = q.Where(x => x.Active == active.Value);
         var items = await q.OrderBy(x => x.Code).Select(x => new { x.Code, x.Name, x.Active }).ToListAsync();
         return new { count = items.Count, items };
+    }
+
+    // ===== Dịch vụ đăng ký kèm lịch hẹn (Ser_AppServiceItems) =====
+    // Gán 1 công việc (SerCode/SerName/StdManHour) vào lịch hẹn; dedupe theo SerCode.
+    public async Task<object?> AddServiceItemAsync(string code, AddServiceItemDto dto)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        if (string.IsNullOrWhiteSpace(dto.SerCode)) throw new InvalidOperationException("Cần SerCode (mã công việc).");
+        var serCode = dto.SerCode.Trim().ToUpperInvariant();
+        var item = await db.AppServiceItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.AppCode == a.Code && x.SerCode == serCode);
+        if (item is null)
+        {
+            item = new AppServiceItem
+            {
+                OrgId = Org, AppCode = a.Code, SerCode = serCode,
+                SerName = string.IsNullOrWhiteSpace(dto.SerName) ? serCode : dto.SerName!.Trim(),
+                StdManHour = dto.StdManHour is > 0 ? dto.StdManHour!.Value : 0m,
+                Note = dto.Note
+            };
+            db.AppServiceItems.Add(item);
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(dto.SerName)) item.SerName = dto.SerName!.Trim();
+            if (dto.StdManHour is > 0) item.StdManHour = dto.StdManHour!.Value;
+            if (dto.Note != null) item.Note = dto.Note;
+        }
+        await db.SaveChangesAsync();
+        return new { item.Id, item.AppCode, item.SerCode, item.SerName, item.StdManHour, item.Note };
+    }
+
+    // Danh sách dịch vụ của 1 lịch hẹn + tổng giờ công chuẩn (ước lượng thời lượng).
+    public async Task<object?> ListServiceItemsAsync(string code)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        var items = await db.AppServiceItems.Where(x => x.OrgId == Org && x.AppCode == a.Code)
+            .OrderBy(x => x.SerCode)
+            .Select(x => new { x.Id, x.SerCode, x.SerName, x.StdManHour, x.Note }).ToListAsync();
+        return new { a.Code, count = items.Count, totalManHour = items.Sum(x => x.StdManHour), items };
+    }
+
+    public async Task<object?> RemoveServiceItemAsync(string code, long itemId)
+    {
+        var a = await Get(code);
+        if (a is null) return null;
+        var item = await db.AppServiceItems.FirstOrDefaultAsync(x => x.OrgId == Org && x.AppCode == a.Code && x.Id == itemId);
+        if (item is null) return null;
+        db.AppServiceItems.Remove(item);
+        await db.SaveChangesAsync();
+        return new { a.Code, removed = itemId };
     }
 }

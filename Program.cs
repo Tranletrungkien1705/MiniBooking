@@ -178,6 +178,30 @@ app.MapPost("/api/cavity-types", async (AddCavityTypeDto dto, IBookingService sv
 app.MapGet("/api/cavity-types", async (IBookingService svc, bool? active) =>
     Results.Ok(await svc.ListCavityTypesAsync(active))).RequireAuthorization();
 
+// ---- Dịch vụ đăng ký kèm lịch hẹn (Ser_AppServiceItems): công việc + giờ công chuẩn ----
+app.MapPost("/api/appointments/{code}/services", async (string code, AddServiceItemDto dto, IBookingService svc) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Cần SerCode." });
+    try
+    {
+        var r = await svc.AddServiceItemAsync(code, dto);
+        return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { code, error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapGet("/api/appointments/{code}/services", async (string code, IBookingService svc) =>
+{
+    var r = await svc.ListServiceItemsAsync(code);
+    return r is null ? Results.NotFound(new { code, error = "Không thấy lịch hẹn." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapDelete("/api/appointments/{code}/services/{itemId:long}", async (string code, long itemId, IBookingService svc) =>
+{
+    var r = await svc.RemoveServiceItemAsync(code, itemId);
+    return r is null ? Results.NotFound(new { code, itemId, error = "Không thấy dịch vụ của lịch hẹn." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // ---- Chăm sóc KH dịch vụ (Ser_CustomerCare): nhắc bảo dưỡng/sinh nhật → liên hệ → đặt lịch ----
 app.MapPost("/api/care", async (CreateReminderDto dto, IBookingService svc) =>
 {
