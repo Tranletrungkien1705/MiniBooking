@@ -23,6 +23,8 @@ public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, st
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
 public record CreateReceptionFormDto(string? ReceptionFNo, string? DealerCode, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? ReceptionType, string? AppCode, string? Note);
 public record DeliverReceptionFormDto(string? RoNo, string? Note);
+// Ser_App_GetStatusList01DL: bộ lọc nâng cao danh sách lịch hẹn (đa giá trị '|', mẫu biển số, khoảng thời gian, timeline).
+public record SearchAppointmentsDto(string? DealerCodes, string? Statuses, string? PlatePattern, string? CustomerName, string? Creator, string? AppTypeCodes, string? DateFrom, string? DateTimeline, int? RecordStart, int? RecordCount);
 
 public interface IBookingService
 {
@@ -72,6 +74,7 @@ public interface IBookingService
     Task<object?> GetReceptionFormAsync(string receptionFNo);                // chi tiết 1 phiếu tiếp nhận
     Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto);  // giao xe (P → A)
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
+    Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -883,4 +886,87 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
         await db.SaveChangesAsync();
         return new { rf.ReceptionFNo, deleted = true };
     }
+
+    // ===== Tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL) =====
+    // Bộ lọc đa giá trị (phân tách '|'), mẫu biển số (LIKE), tên KH (chứa), người tạo, loại cuộc hẹn,
+    // thời gian từ (AppDateTimeFrom >=), timeline (lịch bao trùm 1 mốc: From <= T <= To) + phân trang.
+    public async Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto)
+    {
+        var q = db.Appointments.Where(a => a.OrgId == Org);
+
+        // DealerCodeList: '|'-separated → IN (...).
+        var dealers = SplitList(dto.DealerCodes);
+        if (dealers.Length > 0) q = q.Where(a => dealers.Contains(a.DealerCode));
+
+        // AppStatusList: '|'-separated mã trạng thái nguồn (1..5) → map sang ApptStatus.
+        var statuses = SplitList(dto.Statuses).Select(ParseSourceStatus).Where(s => s.HasValue).Select(s => s!.Value).ToArray();
+        if (statuses.Length > 0) q = q.Where(a => statuses.Contains(a.Status));
+
+        // PlateNoPattern: LIKE (chứa) trên biển số.
+        if (!string.IsNullOrWhiteSpace(dto.PlatePattern))
+        {
+            var p = dto.PlatePattern.Trim();
+            q = q.Where(a => a.Plate != null && a.Plate.Contains(p));
+        }
+
+        // CusName: chứa (không phân biệt hoa thường theo hành vi DB).
+        if (!string.IsNullOrWhiteSpace(dto.CustomerName))
+        {
+            var n = dto.CustomerName.Trim();
+            q = q.Where(a => a.CustomerName.Contains(n));
+        }
+
+        // Creator: người tạo lịch (MiniBooking chưa lưu Creator → lọc theo Engineer như proxy nếu có).
+        if (!string.IsNullOrWhiteSpace(dto.Creator))
+        {
+            var c = dto.Creator.Trim();
+            q = q.Where(a => a.Engineer == c);
+        }
+
+        // AppTypeCodeList: '|'-separated → IN (...).
+        var appTypes = SplitList(dto.AppTypeCodes);
+        if (appTypes.Length > 0) q = q.Where(a => a.AppTypeCode != null && appTypes.Contains(a.AppTypeCode));
+
+        // AppDateTimeFrom: lịch có giờ hẹn từ mốc này trở đi.
+        if (!string.IsNullOrWhiteSpace(dto.DateFrom) && DateTime.TryParse(dto.DateFrom, out var from))
+            q = q.Where(a => a.PreferredAt >= from);
+
+        // DateTimeline: lịch bao trùm mốc T (SlotFrom <= T <= SlotTo, fallback PreferredAt).
+        if (!string.IsNullOrWhiteSpace(dto.DateTimeline) && DateTime.TryParse(dto.DateTimeline, out var tl))
+            q = q.Where(a => (a.SlotFrom ?? a.PreferredAt) <= tl && (a.SlotTo ?? a.PreferredAt.AddHours(1)) >= tl);
+
+        var total = await q.CountAsync();
+
+        // Phân trang (RecordStart 0-based, RecordCount mặc định 50, tối đa 500).
+        var start = Math.Max(0, dto.RecordStart ?? 0);
+        var count = Math.Clamp(dto.RecordCount ?? 50, 1, 500);
+        var items = await q.OrderBy(a => a.PreferredAt).ThenBy(a => a.Id)
+            .Skip(start).Take(count)
+            .Select(a => new
+            {
+                a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
+                a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
+                a.RoNo, a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo, a.ContactedAt, a.ContactResult
+            }).ToListAsync();
+
+        return new { total, recordStart = start, recordCount = count, count = items.Count, items };
+    }
+
+    // Tách danh sách '|'-separated thành mảng đã trim/upper, bỏ rỗng (Ser_App_GetStatusList01DL).
+    private static string[] SplitList(string? raw) =>
+        string.IsNullOrWhiteSpace(raw)
+            ? Array.Empty<string>()
+            : raw.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                 .Select(x => x.ToUpperInvariant()).ToArray();
+
+    // Map mã trạng thái nguồn (Ser_App.AppStatus: 1 Mới tạo, 2 Xác nhận, 3 Tiếp nhận, 4 Hủy, 5 Đã liên hệ) → ApptStatus.
+    private static ApptStatus? ParseSourceStatus(string code) => code switch
+    {
+        "1" => ApptStatus.Requested,
+        "2" => ApptStatus.Confirmed,
+        "3" => ApptStatus.CheckedIn,
+        "4" => ApptStatus.Cancelled,
+        "5" => ApptStatus.Contacted,
+        _ => null
+    };
 }

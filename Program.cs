@@ -95,6 +95,13 @@ app.MapGet("/api/book/{code}", async (string code, IBookingService svc) =>
 app.MapGet("/api/appointments", async (IBookingService svc, string? status, string? dealer, string? date) =>
     Results.Ok(await svc.ListAsync(status, dealer, date))).RequireAuthorization();
 
+// Ser_App_GetStatusList01DL: tìm kiếm nâng cao lịch hẹn (đa giá trị '|', mẫu biển số, tên KH, loại cuộc hẹn, timeline, phân trang).
+app.MapGet("/api/appointments/search", async (IBookingService svc, string? dealerCodes, string? statuses, string? platePattern,
+    string? customerName, string? creator, string? appTypeCodes, string? dateFrom, string? dateTimeline, int? recordStart, int? recordCount) =>
+    Results.Ok(await svc.SearchAppointmentsAsync(new SearchAppointmentsDto(
+        dealerCodes, statuses, platePattern, customerName, creator, appTypeCodes, dateFrom, dateTimeline, recordStart, recordCount)))
+).RequireAuthorization();
+
 // Gọi xác nhận lịch trước giờ hẹn (Ser_CustomerCare72h): Requested → Contacted (AppStatus=5).
 app.MapPost("/api/appointments/{code}/contact", async (string code, ContactApptDto dto, IBookingService svc) =>
 {
