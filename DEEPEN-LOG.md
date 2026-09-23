@@ -1,0 +1,3 @@
+# DEEPEN-LOG — MiniBooking
+
+- 2026-09-23 · feat: khoang sửa chữa (Ser_Cavity) + sức chứa khung giờ khi đặt/xác nhận lịch hẹn — port từ 2023.H.CarServices (Ser_Cavity, Ser_App: CavityID/AppTypeCode/AppDateTimeFrom-To). Thêm entity `ServiceBay` (Code/Name/BayType/CapacityPerSlot/DealerCode/Active), mở rộng `Appointment` (BayCode/AppTypeCode/SlotFrom/SlotTo). `BookAsync` chặn vượt sức chứa khoang; `ConfirmAsync` gán khoang + khung giờ và chặn trùng khung giờ trên cùng khoang (MyCheck_DateTime_Cavity); `SlotAvailabilityAsync` báo sức chứa còn lại. Endpoints: POST/GET `/api/bays`, GET `/api/bays/availability`. Build Release 0 error.
