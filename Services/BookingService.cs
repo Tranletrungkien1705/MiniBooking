@@ -43,6 +43,9 @@ public record SearchAppointmentsDto(string? DealerCodes, string? Statuses, strin
 public record GetNewAppointmentsDto(string? AppIds, string? DealerCodes, string? PlateNos, string? AppNos, string? CustomerNames,
     string? CreatedDates, string? AppDateTimes, string? Statuses, string? Creators,
     bool? IncludeApp, bool? IncludeServiceItems, bool? IncludePartItems, int? RecordStart, int? RecordCount);
+// Ser_App_GetForCavityDL: tìm lịch hẹn để xếp khoang — lọc theo biển số (chứa), 1 ngày cụ thể,
+// và 4 cờ loại cuộc hẹn (BDDK bảo dưỡng định kỳ / SCC sửa chữa chung / SCDS sửa chữa đồng sơn / SCK sửa chữa khác).
+public record GetForCavityDto(string? PlateNo, string? DateTimeLine, bool? FlagBDDK, bool? FlagSCC, bool? FlagSCDS, bool? FlagSCK);
 // Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
 public record UpdateAppointmentDto(string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType,
     DateTime? PreferredAt, string? DealerCode, string? Note, string? BayCode, string? AppTypeCode, DateTime? SlotTo,
@@ -134,6 +137,7 @@ public interface IBookingService
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
     Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
     Task<object> GetNewAppointmentsAsync(GetNewAppointmentsDto dto);         // tìm lịch hẹn "GetNew" + mở rộng chi tiết (Ser_App_GetNewDL)
+    Task<object> GetForCavityAsync(GetForCavityDto dto);                     // tìm lịch hẹn để xếp khoang (Ser_App_GetForCavityDL)
     Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto);  // sửa lịch hẹn (Ser_App_UpdateDL)
     Task<object> CreateWorkAssignmentAsync(CreateWorkAssignmentDto dto);          // phân công công việc sửa chữa (Ser_AssignmentWork_CreateDL)
     Task<object> ListWorkAssignmentsAsync(string? roId, string? dealer, string? date);  // danh sách phân công (Ser_AssignmentWork_Get_DL)
@@ -1477,6 +1481,49 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             total, recordStart = start, recordCount = count, count = items.Count,
             includeApp, includeServiceItems = includeServices, includePartItems = includeParts, items
         };
+    }
+
+    // ===== Tìm lịch hẹn để xếp khoang (Ser_App_GetForCavityDL) =====
+    // Lọc theo biển số (chứa), 1 ngày cụ thể (AppDateTime), và 4 cờ loại cuộc hẹn:
+    // BDDK (bảo dưỡng định kỳ) / SCC (sửa chữa chung) / SCDS (sửa chữa đồng sơn) / SCK (sửa chữa khác).
+    // Cờ nào bật thì gom mã tương ứng vào danh sách AppTypeCode (IN ...); không bật cờ nào → không lọc theo loại.
+    public async Task<object> GetForCavityAsync(GetForCavityDto dto)
+    {
+        var q = db.Appointments.Where(a => a.OrgId == Org);
+
+        // PlateNoParttern: LIKE (chứa) trên biển số.
+        if (!string.IsNullOrWhiteSpace(dto.PlateNo))
+        {
+            var p = dto.PlateNo.Trim();
+            q = q.Where(a => a.Plate != null && a.Plate.Contains(p));
+        }
+
+        // DateTimeLine: lọc theo đúng 1 ngày hẹn (AppDateTime).
+        if (!string.IsNullOrWhiteSpace(dto.DateTimeLine) && DateTime.TryParse(dto.DateTimeLine, out var day))
+            q = q.Where(a => a.PreferredAt.Date == day.Date);
+
+        // AppTypeCodeList: gom từ 4 cờ BDDK/SCC/SCDS/SCK → IN (...).
+        var appTypes = new List<string>();
+        if (dto.FlagBDDK == true) appTypes.Add("BDDK");
+        if (dto.FlagSCC == true) appTypes.Add("SCC");
+        if (dto.FlagSCDS == true) appTypes.Add("SCDS");
+        if (dto.FlagSCK == true) appTypes.Add("SCK");
+        if (appTypes.Count > 0)
+        {
+            var set = appTypes.ToArray();
+            q = q.Where(a => a.AppTypeCode != null && set.Contains(a.AppTypeCode));
+        }
+
+        var total = await q.CountAsync();
+        var items = await q.OrderBy(a => a.PreferredAt).ThenBy(a => a.Id).Take(500)
+            .Select(a => new
+            {
+                a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
+                a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
+                a.RoNo, a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo
+            }).ToListAsync();
+
+        return new { total, count = items.Count, appTypeCodes = appTypes, items };
     }
 
     private static string[] SplitList(string? raw) =>

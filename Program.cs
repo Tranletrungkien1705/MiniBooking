@@ -112,6 +112,13 @@ app.MapGet("/api/appointments/get-new", async (IBookingService svc, string? appI
         includeApp, includeServiceItems, includePartItems, recordStart, recordCount)))
 ).RequireAuthorization();
 
+// Ser_App_GetForCavityDL: tìm lịch hẹn để xếp khoang — lọc theo biển số (chứa), 1 ngày cụ thể,
+// và 4 cờ loại cuộc hẹn (BDDK bảo dưỡng định kỳ / SCC sửa chữa chung / SCDS sửa chữa đồng sơn / SCK sửa chữa khác).
+app.MapGet("/api/appointments/for-cavity", async (IBookingService svc, string? plateNo, string? dateTimeLine,
+    bool? flagBDDK, bool? flagSCC, bool? flagSCDS, bool? flagSCK) =>
+    Results.Ok(await svc.GetForCavityAsync(new GetForCavityDto(plateNo, dateTimeLine, flagBDDK, flagSCC, flagSCDS, flagSCK)))
+).RequireAuthorization();
+
 // Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
 app.MapPut("/api/appointments/{code}", async (string code, UpdateAppointmentDto dto, IBookingService svc) =>
 {
