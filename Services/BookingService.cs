@@ -29,6 +29,8 @@ public record RoServiceItemStatusDto(string SerCode, bool Status);
 public record UpdateRoServiceItemsStatusDto(List<RoServiceItemStatusDto> Items, string? ChangedBy);
 // Ser_RO_UpdateStatus: chuyển trạng thái lệnh sửa chữa theo máy trạng thái Ser_RO_Stage.
 public record ChangeRoStatusDto(string ToStatus, string? Note, string? ChangedBy);
+// Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của lệnh sửa chữa (kèm lý do).
+public record UpdatePlannedDeliveryDateDto(string PlanedDeliveryDate, string? Remark, string? ChangedBy);
 public record SlotQueryDto(string Date, string? BayCode, string? DealerCode);
 public record CreatePostCareDto(string CusCareId, string? RoId, string? RoNo, string CustomerName, string? Phone, string? Plate, string? FrameNo, string? DealerCode, DateTime? FinishedDate, string? Note);
 public record PostCareContactDto(string? ContactDate, string? FyourCSSH, string? WFBasicNeeds, string? YourCarProblem, string? YourRIWN, string? YourSatisfyQSv, string? YourHopeOfOur, string? Note);
@@ -103,6 +105,8 @@ public interface IBookingService
     Task<object?> LinkRepairOrderAsync(string roId, string appCode);         // gắn lệnh sửa chữa ↔ lịch hẹn (Ser_RO_UpdateAppId)
     Task<object?> ChangeRepairOrderStatusAsync(string roId, ChangeRoStatusDto dto);  // chuyển trạng thái RO (Ser_RO_UpdateStatus)
     Task<object?> GetRepairOrderStatusHistoryAsync(string roId);             // lịch sử đổi trạng thái RO (Ser_ROHistory)
+    Task<object?> UpdatePlannedDeliveryDateAsync(string roId, UpdatePlannedDeliveryDateDto dto);  // lưu ngày giao xe dự kiến (Ser_RO_UpdatePlanedDeliveryDateDL)
+    Task<object?> GetPlannedDeliveryDateHistoryAsync(string roId);           // lịch sử ngày giao xe dự kiến (Ser_Ro_PlanedDeliveryDate_His)
     Task<object?> GetRepairOrderForAppointmentAsync(string roId);            // dữ liệu RO để tạo lịch hẹn (Ser_RO_GetForSerAppDL)
     Task<object?> AddRoServiceItemAsync(string roId, AddRoServiceItemDto dto);       // thêm dòng công việc vào RO (Ser_ROServiceItems)
     Task<object?> ListRoServiceItemsAsync(string roId);                              // danh sách công việc của RO + tổng tiền
@@ -887,6 +891,63 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             toStatusText = RoStages.Text(x.ToStatus)
         });
         return new { ro.RoId, status = ro.Status, statusText = RoStages.Text(ro.Status), count = items.Count, items = rows };
+    }
+
+    // Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của 1 lệnh sửa chữa.
+    // Quy tắc (theo controller SerROController.UpdatePlanedDeliveryDateDL + BizCarSv.Service01):
+    //  - ROID/PlanedDeliveryDate/Remark bắt buộc; RO phải tồn tại.
+    //  - Ngày giao xe dự kiến phải SAU ngày vào xưởng (CheckInDate).
+    //  - Ngày mới phải KHÁC ngày cũ (không lưu khi không đổi).
+    //  - Không cho đổi khi RO đã Hoàn tất (FNS).
+    //  - Ghi lịch sử: dòng cũ FlagCurrent=false, thêm dòng mới FlagCurrent=true (Ser_Ro_PlanedDeliveryDate_His).
+    public async Task<object?> UpdatePlannedDeliveryDateAsync(string roId, UpdatePlannedDeliveryDateDto dto)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(dto.PlanedDeliveryDate) || !DateTime.TryParse(dto.PlanedDeliveryDate, out var newDate))
+            throw new InvalidOperationException("Cần PlanedDeliveryDate hợp lệ (ngày giao xe dự kiến).");
+        if (string.IsNullOrWhiteSpace(dto.Remark))
+            throw new InvalidOperationException("Cần Remark (lý do đổi ngày giao xe dự kiến).");
+
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+
+        // Không cho đổi khi RO đã hoàn tất (Ser_RO_Stage.Finished).
+        if (string.Equals((ro.Status ?? "").Trim(), RoStages.Finished, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Lệnh sửa chữa '{roId}' đã hoàn tất ({RoStages.Text(RoStages.Finished)}), không thể đổi ngày giao xe dự kiến.");
+
+        // Ngày giao xe dự kiến phải sau ngày vào xưởng (CheckInDate).
+        if (ro.CheckInDate.HasValue && newDate <= ro.CheckInDate.Value)
+            throw new InvalidOperationException($"Ngày giao xe dự kiến {newDate:yyyy-MM-dd HH:mm} phải sau ngày vào xưởng {ro.CheckInDate.Value:yyyy-MM-dd HH:mm}.");
+
+        // Không lưu khi ngày không đổi.
+        if (ro.PlanedDeliveryDate.HasValue && ro.PlanedDeliveryDate.Value == newDate)
+            throw new InvalidOperationException($"Ngày giao xe dự kiến không thay đổi ({newDate:yyyy-MM-dd HH:mm}).");
+
+        var now = DateTime.Now;
+        // Đánh dấu các bản ghi cũ không còn hiện hành (FlagCurrent = false).
+        var olds = await db.RepairOrderDeliveryPlans.Where(x => x.OrgId == Org && x.RoId == roId && x.FlagCurrent).ToListAsync();
+        foreach (var o in olds) { o.FlagCurrent = false; o.LogLUDateTime = now; o.LogLUBy = dto.ChangedBy; }
+
+        ro.PlanedDeliveryDate = newDate;
+        db.RepairOrderDeliveryPlans.Add(new RepairOrderDeliveryPlan
+        {
+            OrgId = Org, RoId = roId, PlanedDeliveryDate = newDate, Remark = dto.Remark.Trim(),
+            FlagCurrent = true, CreatedBy = dto.ChangedBy, CreatedDate = now, LogLUDateTime = now, LogLUBy = dto.ChangedBy
+        });
+        await db.SaveChangesAsync();
+        return new { ro.RoId, ro.PlanedDeliveryDate, remark = dto.Remark.Trim(), ro.CheckInDate, superseded = olds.Count };
+    }
+
+    // Lịch sử ngày giao xe dự kiến của 1 lệnh sửa chữa (Ser_Ro_PlanedDeliveryDate_His).
+    public async Task<object?> GetPlannedDeliveryDateHistoryAsync(string roId)
+    {
+        roId = roId.Trim().ToUpperInvariant();
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == Org && x.RoId == roId);
+        if (ro is null) return null;
+        var items = await db.RepairOrderDeliveryPlans.Where(x => x.OrgId == Org && x.RoId == roId)
+            .OrderByDescending(x => x.CreatedDate)
+            .Select(x => new { x.Id, x.PlanedDeliveryDate, x.Remark, x.FlagCurrent, x.CreatedBy, x.CreatedDate }).ToListAsync();
+        return new { ro.RoId, current = ro.PlanedDeliveryDate, count = items.Count, items };
     }
 
     // Ser_RO_GetForSerAppDL: lấy dữ liệu 1 lệnh sửa chữa để TẠO LỊCH HẸN (Ser_App) từ RO.

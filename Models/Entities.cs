@@ -197,6 +197,8 @@ public sealed class RepairOrder
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? LinkedAt { get; set; }        // thời điểm gắn cuộc hẹn
     public DateTime? StatusChangedAt { get; set; } // LogLUDateTime — lần đổi trạng thái gần nhất
+    public DateTime? CheckInDate { get; set; }     // CheckInDate — ngày xe vào xưởng (KH tới)
+    public DateTime? PlanedDeliveryDate { get; set; } // PlanedDeliveryDate — ngày giao xe dự kiến (D.Kiến GX)
     // Ser_RO.ServiceStatus: 1 = mọi công việc của RO đã hoàn thành, 0 = còn công việc chưa xong.
     // Tự động cập nhật khi đổi trạng thái từng dòng công việc (Ser_RO_Update_ServiceItemsStatusRODL).
     public bool ServiceStatus { get; set; }
@@ -313,6 +315,23 @@ public static class RoStages
         var c = (code ?? "").Trim().ToUpperInvariant();
         return c is Create or Print or RejectRO or NotResponding;
     }
+}
+
+/// <summary>Lịch sử ngày giao xe dự kiến của lệnh sửa chữa (chuyển đổi Ser_Ro_PlanedDeliveryDate_His):
+/// mỗi lần đổi ngày giao xe dự kiến (Ser_RO_UpdatePlanedDeliveryDateDL) ghi 1 dòng; dòng cũ bị đánh
+/// FlagCurrent = false, dòng mới FlagCurrent = true (chỉ 1 dòng hiện hành/RO).</summary>
+public sealed class RepairOrderDeliveryPlan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RoId { get; set; } = "";        // ROID — lệnh sửa chữa
+    public DateTime PlanedDeliveryDate { get; set; } // PlanedDeliveryDate — ngày giao xe dự kiến
+    public string? Remark { get; set; }             // Remark — lý do đổi
+    public bool FlagCurrent { get; set; } = true;   // FlagCurrent — true = bản ghi hiện hành
+    public string? CreatedBy { get; set; }          // CreatedBy — người tạo
+    public DateTime CreatedDate { get; set; } = DateTime.Now; // CreatedDate
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now; // LogLUDateTime
+    public string? LogLUBy { get; set; }            // LogLUBy
 }
 
 /// <summary>Lịch sử đổi trạng thái lệnh sửa chữa (chuyển đổi Ser_ROHistory): ghi lại mỗi lần chuyển

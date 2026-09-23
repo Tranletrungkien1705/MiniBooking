@@ -18,6 +18,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
     public DbSet<RepairOrderServiceItem> RepairOrderServiceItems => Set<RepairOrderServiceItem>();
     public DbSet<RepairOrderStatusHistory> RepairOrderStatusHistories => Set<RepairOrderStatusHistory>();
+    public DbSet<RepairOrderDeliveryPlan> RepairOrderDeliveryPlans => Set<RepairOrderDeliveryPlan>();
     public DbSet<PostServiceCare> PostServiceCares => Set<PostServiceCare>();
     public DbSet<ReceptionForm> ReceptionForms => Set<ReceptionForm>();
     public DbSet<WorkAssignment> WorkAssignments => Set<WorkAssignment>();
@@ -41,6 +42,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<RepairOrder>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();
         b.Entity<RepairOrderServiceItem>().HasIndex(x => new { x.OrgId, x.RoId, x.SerCode });
         b.Entity<RepairOrderStatusHistory>().HasIndex(x => new { x.OrgId, x.RoId, x.ChangedAt });
+        b.Entity<RepairOrderDeliveryPlan>().HasIndex(x => new { x.OrgId, x.RoId, x.FlagCurrent });
         b.Entity<PostServiceCare>().HasIndex(x => new { x.OrgId, x.CusCareId }).IsUnique();
         b.Entity<ReceptionForm>().HasIndex(x => new { x.OrgId, x.ReceptionFNo }).IsUnique();
         b.Entity<WorkAssignment>().HasIndex(x => new { x.OrgId, x.RoId }).IsUnique();

@@ -337,6 +337,24 @@ app.MapGet("/api/repair-orders/{roId}/status-history", async (string roId, IBook
     return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
 }).RequireAuthorization();
 
+// Ser_RO_UpdatePlanedDeliveryDateDL: lưu ngày giao xe dự kiến của lệnh sửa chữa (kèm lý do).
+app.MapPost("/api/repair-orders/{roId}/planned-delivery-date", async (string roId, UpdatePlannedDeliveryDateDto dto, IBookingService svc) =>
+{
+    try
+    {
+        var r = await svc.UpdatePlannedDeliveryDateAsync(roId, dto);
+        return r is null ? Results.NotFound(new { roId, error = "Không thấy lệnh sửa chữa." }) : Results.Ok(r);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { roId, error = ex.Message }); }
+}).RequireAuthorization();
+
+// Lịch sử ngày giao xe dự kiến của lệnh sửa chữa (Ser_Ro_PlanedDeliveryDate_His).
+app.MapGet("/api/repair-orders/{roId}/planned-delivery-date", async (string roId, IBookingService svc) =>
+{
+    var r = await svc.GetPlannedDeliveryDateHistoryAsync(roId);
+    return r is null ? Results.NotFound(new { roId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
 // Ser_RO_GetForSerAppDL: lấy dữ liệu lệnh sửa chữa để tạo lịch hẹn (header RO + công việc + phụ tùng cần).
 app.MapGet("/api/repair-orders/{roId}/for-appointment", async (string roId, IBookingService svc) =>
 {
