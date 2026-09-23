@@ -753,6 +753,32 @@ public static class CampaignStatuses
     public static bool IsActive(string? code) => string.Equals((code ?? "").Trim(), Approve, StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>Thiết lập bảo dưỡng định kỳ (chuyển đổi Ser_MST_ROMaintanceSetting): master ánh xạ mốc số Km
+/// tiêu chuẩn → số lần bảo dưỡng thỏa mãn chính sách bảo hành (CSBH). Dùng để tra cứu mốc bảo dưỡng kế tiếp
+/// theo số Km hiện tại của xe. Km là duy nhất (Ser_MST_ROMaintanceSetting_Save_KmExisted).</summary>
+public sealed class MaintenanceSetting
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RomsId { get; set; } = "";      // ROMSID — mã thiết lập bảo dưỡng
+    public int Km { get; set; }                     // Km — mốc số Kilomet tiêu chuẩn (1000/5000/10000/20000...)
+    public int Maintances { get; set; }             // Maintances — số lần bảo dưỡng thỏa mãn CSBH (>= 0)
+    public bool FlagActive { get; set; } = true;    // FlagActive — còn hiệu lực
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;  // LogLUDateTime
+    public string? LogLUBy { get; set; }            // LogLUBy
+}
+
+/// <summary>Quy tắc thiết lập bảo dưỡng (chuyển đổi Ser_MST_ROMaintanceSetting):
+/// Km phải là số nguyên dương, Maintances phải là số nguyên >= 0, Km không được trùng.</summary>
+public static class MaintenanceRules
+{
+    /// <summary>True nếu mốc Km hợp lệ (số nguyên dương).</summary>
+    public static bool IsValidKm(int km) => km > 0;
+
+    /// <summary>True nếu số lần bảo dưỡng hợp lệ (>= 0).</summary>
+    public static bool IsValidMaintances(int maintances) => maintances >= 0;
+}
+
 /// <summary>Lịch hẹn dịch vụ (chuyển đổi Ser_App): 1 khách/1 xe/1 khung giờ tại 1 xưởng.</summary>
 public sealed class Appointment
 {

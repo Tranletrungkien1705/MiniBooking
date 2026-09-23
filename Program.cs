@@ -660,6 +660,37 @@ app.MapDelete("/api/campaigns/{camMarketingNo}", async (string camMarketingNo, I
 app.MapGet("/api/campaigns/match", async (IBookingService svc, string? carIds, string? roIds, string? effDate) =>
     Results.Ok(await svc.MatchCampaignsAsync(new MatchCampaignsDto(carIds, roIds, effDate)))).RequireAuthorization();
 
+// ---- Thiết lập bảo dưỡng định kỳ (Ser_MST_ROMaintanceSetting): mốc Km → số lần bảo dưỡng thỏa mãn CSBH ----
+// Ser_MST_ROMaintanceSetting_Get: danh sách thiết lập (lọc khoảng Km + cờ hiệu lực + phân trang).
+app.MapGet("/api/maintenance-settings", async (IBookingService svc, int? minKm, int? maxKm, bool? active, int? recordStart, int? recordCount) =>
+    Results.Ok(await svc.ListMaintenanceSettingsAsync(minKm, maxKm, active, recordStart, recordCount))).RequireAuthorization();
+
+// Gợi ý mốc bảo dưỡng kế tiếp theo số Km hiện tại của xe.
+app.MapGet("/api/maintenance-settings/suggest", async (IBookingService svc, int km) =>
+{
+    var r = await svc.SuggestMaintenanceForKmAsync(km);
+    return r is null ? Results.NotFound(new { km, error = "Không có mốc bảo dưỡng nào phù hợp." }) : Results.Ok(r);
+}).RequireAuthorization();
+
+app.MapGet("/api/maintenance-settings/{romsId}", async (string romsId, IBookingService svc) =>
+{
+    var r = await svc.GetMaintenanceSettingAsync(romsId);
+    return r is null ? Results.NotFound(new { romsId, found = false }) : Results.Ok(r);
+}).RequireAuthorization();
+
+// Ser_MST_ROMaintanceSetting_Save: tạo/cập nhật thiết lập bảo dưỡng (validate Km dương + Maintances >= 0 + Km không trùng).
+app.MapPost("/api/maintenance-settings", async (SaveMaintenanceSettingDto dto, IBookingService svc) =>
+{
+    try { return Results.Ok(await svc.SaveMaintenanceSettingAsync(dto)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapDelete("/api/maintenance-settings/{romsId}", async (string romsId, IBookingService svc) =>
+{
+    var r = await svc.DeleteMaintenanceSettingAsync(romsId);
+    return r is null ? Results.NotFound(new { romsId, error = "Không thấy thiết lập bảo dưỡng." }) : Results.Ok(r);
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

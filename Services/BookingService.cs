@@ -79,6 +79,8 @@ public record CreateCampaignDto(string? CamMarketingNo, string CamMarketingName,
     List<CampaignConditionDto>? Conditions, List<CampaignPartDto>? Parts);
 // Ser_CampaignMarketing_GetForRoPartItem: lọc chiến dịch áp dụng cho xe/RO (CarID/ROID + ngày hiệu lực).
 public record MatchCampaignsDto(string? CarIds, string? RoIds, string? EffDate);
+// Ser_MST_ROMaintanceSetting: thiết lập bảo dưỡng định kỳ (mốc Km → số lần bảo dưỡng thỏa mãn CSBH).
+public record SaveMaintenanceSettingDto(string? RomsId, int Km, int Maintances, bool? FlagActive, string? LogLUBy);
 
 public interface IBookingService
 {
@@ -171,6 +173,11 @@ public interface IBookingService
     Task<object?> GetCampaignAsync(string camMarketingNo);                        // chi tiết chiến dịch (kèm điều kiện + phụ tùng)
     Task<object?> DeleteCampaignAsync(string camMarketingNo);                     // xóa chiến dịch + điều kiện + phụ tùng
     Task<object> MatchCampaignsAsync(MatchCampaignsDto dto);                      // lọc chiến dịch áp dụng cho xe/RO (Ser_CampaignMarketing_GetForRoPartItem)
+    Task<object> ListMaintenanceSettingsAsync(int? minKm, int? maxKm, bool? active, int? recordStart, int? recordCount);  // danh sách thiết lập bảo dưỡng (Ser_MST_ROMaintanceSetting_Get)
+    Task<object?> GetMaintenanceSettingAsync(string romsId);                      // chi tiết 1 thiết lập bảo dưỡng theo ROMSID
+    Task<object> SaveMaintenanceSettingAsync(SaveMaintenanceSettingDto dto);      // tạo/cập nhật thiết lập bảo dưỡng (Ser_MST_ROMaintanceSetting_Save)
+    Task<object?> DeleteMaintenanceSettingAsync(string romsId);                   // xóa thiết lập bảo dưỡng
+    Task<object?> SuggestMaintenanceForKmAsync(int km);                           // gợi ý mốc bảo dưỡng kế tiếp theo số Km hiện tại
 }
 
 public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBookingService
@@ -2557,5 +2564,87 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
             parts = parts.Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity, p.Price, p.Note }),
             partAmount = Math.Round(parts.Sum(p => p.Price * p.Quantity), 2)
         };
+    }
+
+    // ===== Thiết lập bảo dưỡng định kỳ (Ser_MST_ROMaintanceSetting) =====
+    // Ser_MST_ROMaintanceSetting_Get: danh sách thiết lập bảo dưỡng (lọc theo khoảng Km + cờ hiệu lực + phân trang).
+    public async Task<object> ListMaintenanceSettingsAsync(int? minKm, int? maxKm, bool? active, int? recordStart, int? recordCount)
+    {
+        var q = db.MaintenanceSettings.Where(x => x.OrgId == Org);
+        if (minKm.HasValue) q = q.Where(x => x.Km >= minKm.Value);
+        if (maxKm.HasValue) q = q.Where(x => x.Km <= maxKm.Value);
+        if (active.HasValue) q = q.Where(x => x.FlagActive == active.Value);
+        var total = await q.CountAsync();
+        var start = Math.Max(0, recordStart ?? 0);
+        var count = recordCount is > 0 ? recordCount!.Value : 100;
+        var items = await q.OrderBy(x => x.Km).Skip(start).Take(count)
+            .Select(x => new { x.Id, x.RomsId, x.Km, x.Maintances, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+            .ToListAsync();
+        return new { total, count = items.Count, recordStart = start, items };
+    }
+
+    public async Task<object?> GetMaintenanceSettingAsync(string romsId)
+    {
+        var r = romsId.Trim().ToUpperInvariant();
+        var x = await db.MaintenanceSettings.FirstOrDefaultAsync(m => m.OrgId == Org && m.RomsId == r);
+        if (x is null) return null;
+        return new { x.Id, x.RomsId, x.Km, x.Maintances, x.FlagActive, x.LogLUDateTime, x.LogLUBy };
+    }
+
+    // Ser_MST_ROMaintanceSetting_Save: tạo/cập nhật thiết lập bảo dưỡng.
+    // Validate: Km là số nguyên dương (Save_KMNotInteger), Maintances >= 0 (Save_MaintancesNotInteger),
+    // Km không trùng (Save_KmExisted), ROMSID (nếu có) phải tồn tại (Save_ROMSIDNotFound).
+    public async Task<object> SaveMaintenanceSettingAsync(SaveMaintenanceSettingDto dto)
+    {
+        if (!MaintenanceRules.IsValidKm(dto.Km))
+            throw new InvalidOperationException($"Mốc Km '{dto.Km}' không hợp lệ (phải là số nguyên dương).");
+        if (!MaintenanceRules.IsValidMaintances(dto.Maintances))
+            throw new InvalidOperationException($"Số lần bảo dưỡng '{dto.Maintances}' không hợp lệ (phải >= 0).");
+
+        var romsId = dto.RomsId?.Trim().ToUpperInvariant();
+        MaintenanceSetting? x;
+        if (!string.IsNullOrWhiteSpace(romsId))
+        {
+            x = await db.MaintenanceSettings.FirstOrDefaultAsync(m => m.OrgId == Org && m.RomsId == romsId);
+            if (x is null) throw new InvalidOperationException($"Mã thiết lập '{romsId}' không tồn tại.");
+        }
+        else
+        {
+            romsId = "ROMS" + DateTime.Now.ToString("yyMMddHHmmss") + Random.Shared.Next(10, 99);
+            x = new MaintenanceSetting { OrgId = Org, RomsId = romsId };
+            db.MaintenanceSettings.Add(x);
+        }
+
+        // Km duy nhất (Ser_MST_ROMaintanceSetting_Save_KmExisted).
+        var dupKm = await db.MaintenanceSettings.AnyAsync(m => m.OrgId == Org && m.Km == dto.Km && m.Id != x.Id);
+        if (dupKm) throw new InvalidOperationException($"Mốc {dto.Km} km đã tồn tại trong hệ thống.");
+
+        x.Km = dto.Km;
+        x.Maintances = dto.Maintances;
+        if (dto.FlagActive.HasValue) x.FlagActive = dto.FlagActive.Value;
+        x.LogLUDateTime = DateTime.Now;
+        x.LogLUBy = dto.LogLUBy;
+        await db.SaveChangesAsync();
+        return new { x.Id, x.RomsId, x.Km, x.Maintances, x.FlagActive, x.LogLUDateTime, x.LogLUBy };
+    }
+
+    public async Task<object?> DeleteMaintenanceSettingAsync(string romsId)
+    {
+        var r = romsId.Trim().ToUpperInvariant();
+        var x = await db.MaintenanceSettings.FirstOrDefaultAsync(m => m.OrgId == Org && m.RomsId == r);
+        if (x is null) return null;
+        db.MaintenanceSettings.Remove(x);
+        await db.SaveChangesAsync();
+        return new { x.RomsId, deleted = true };
+    }
+
+    // Gợi ý mốc bảo dưỡng kế tiếp theo số Km hiện tại: mốc nhỏ nhất có Km >= km hiện tại (còn hiệu lực).
+    public async Task<object?> SuggestMaintenanceForKmAsync(int km)
+    {
+        if (km < 0) km = 0;
+        var next = await db.MaintenanceSettings.Where(m => m.OrgId == Org && m.FlagActive && m.Km >= km)
+            .OrderBy(m => m.Km).FirstOrDefaultAsync();
+        if (next is null) return null;
+        return new { currentKm = km, nextKm = next.Km, next.RomsId, next.Maintances, remainingKm = next.Km - km };
     }
 }
