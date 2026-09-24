@@ -110,6 +110,17 @@ app.MapGet("/api/appointments/search", async (IBookingService svc, string? deale
         dealerCodes, statuses, platePattern, customerName, creator, appTypeCodes, dateFrom, dateTimeline, recordStart, recordCount)))
 ).RequireAuthorization();
 
+// Ser_App_GetStatusList01WHDL (SerAppSearchWHDL): tìm lịch hẹn theo KHOẢNG NGÀY hẹn (appDateTimeFrom..appDateTimeTo)
+// + 5 cờ trạng thái (flagMoiTao/flagXacNhan/flagDaLienHe/flagTiepNhan/flagHuy) + biển số/tên KH/người tạo (chứa)
+// + loại cuộc hẹn (đa giá trị '|') + phân trang theo trang (pageIndex/pageSize).
+app.MapGet("/api/appointments/search-wh", async (IBookingService svc, string? dealerCode, string? appDateTimeFrom, string? appDateTimeTo,
+    string? plateNo, string? customerName, string? creator, string? appTypeCodes,
+    bool? flagMoiTao, bool? flagXacNhan, bool? flagDaLienHe, bool? flagTiepNhan, bool? flagHuy, int? pageIndex, int? pageSize) =>
+    Results.Ok(await svc.SearchAppointmentsWhAsync(new SearchAppointmentsWhDto(
+        dealerCode, appDateTimeFrom, appDateTimeTo, plateNo, customerName, creator, appTypeCodes,
+        flagMoiTao, flagXacNhan, flagDaLienHe, flagTiepNhan, flagHuy, pageIndex, pageSize)))
+).RequireAuthorization();
+
 // Ser_App_GetNewDL: tìm lịch hẹn theo bộ lọc "GetNew" (AppId/AppNo/CreatedDate/Creator/AppStatus/AppDateTime/PlateNo/CusName/DealerCode)
 // + phân trang + tùy chọn mở rộng chi tiết (kèm dịch vụ & phụ tùng ngay trong kết quả).
 app.MapGet("/api/appointments/get-new", async (IBookingService svc, string? appIds, string? dealerCodes, string? plateNos,

@@ -62,6 +62,12 @@ public record GetNewAppointmentsDto(string? AppIds, string? DealerCodes, string?
 // Ser_App_GetForCavityDL: tìm lịch hẹn để xếp khoang — lọc theo biển số (chứa), 1 ngày cụ thể,
 // và 4 cờ loại cuộc hẹn (BDDK bảo dưỡng định kỳ / SCC sửa chữa chung / SCDS sửa chữa đồng sơn / SCK sửa chữa khác).
 public record GetForCavityDto(string? PlateNo, string? DateTimeLine, bool? FlagBDDK, bool? FlagSCC, bool? FlagSCDS, bool? FlagSCK);
+// Ser_App_GetStatusList01WHDL (SerAppSearchWHDL): tìm lịch hẹn theo KHOẢNG NGÀY hẹn (AppDateTimeFrom..AppDateTimeTo)
+// + 5 cờ trạng thái (Mới tạo/Xác nhận/Đã liên hệ/Tiếp nhận/Hủy) + biển số/tên KH/người tạo (chứa) + phân trang theo trang.
+public record SearchAppointmentsWhDto(string? DealerCode, string? AppDateTimeFrom, string? AppDateTimeTo,
+    string? PlateNo, string? CustomerName, string? Creator, string? AppTypeCodes,
+    bool? FlagMoiTao, bool? FlagXacNhan, bool? FlagDaLienHe, bool? FlagTiepNhan, bool? FlagHuy,
+    int? PageIndex, int? PageSize);
 // Ser_App_UpdateDL: sửa lịch hẹn đã có (đổi thời gian/khoang/loại/ghi chú + thay danh sách dịch vụ & phụ tùng).
 public record UpdateAppointmentDto(string? CustomerName, string? Phone, string? Vin, string? Plate, string? ServiceType,
     DateTime? PreferredAt, string? DealerCode, string? Note, string? BayCode, string? AppTypeCode, DateTime? SlotTo,
@@ -175,6 +181,7 @@ public interface IBookingService
     Task<object?> DeliverReceptionFormAsync(string receptionFNo, DeliverReceptionFormDto dto);  // giao xe (P → A)
     Task<object?> DeleteReceptionFormAsync(string receptionFNo);             // xóa phiếu (chặn khi đã có RO)
     Task<object> SearchAppointmentsAsync(SearchAppointmentsDto dto);         // tìm kiếm nâng cao lịch hẹn (Ser_App_GetStatusList01DL)
+    Task<object> SearchAppointmentsWhAsync(SearchAppointmentsWhDto dto);     // tìm lịch hẹn theo khoảng ngày + cờ trạng thái (Ser_App_GetStatusList01WHDL)
     Task<object> GetNewAppointmentsAsync(GetNewAppointmentsDto dto);         // tìm lịch hẹn "GetNew" + mở rộng chi tiết (Ser_App_GetNewDL)
     Task<object> GetForCavityAsync(GetForCavityDto dto);                     // tìm lịch hẹn để xếp khoang (Ser_App_GetForCavityDL)
     Task<object?> UpdateAppointmentAsync(string code, UpdateAppointmentDto dto);  // sửa lịch hẹn (Ser_App_UpdateDL)
@@ -3043,6 +3050,107 @@ public sealed class BookingService(AppDbContext db, ITenantContext tenant) : IBo
                 x.ToStatus, toStatusText = ApptStatusRules.Text(x.ToStatus),
                 x.Note, x.ChangedBy, x.ChangedAt
             })
+        };
+    }
+
+    // ===== Tìm lịch hẹn theo khoảng ngày + cờ trạng thái (Ser_App_GetStatusList01WHDL / SerAppSearchWHDL) =====
+    // Bộ lọc: DealerCode (đại lý), khoảng ngày hẹn AppDateTimeFrom..AppDateTimeTo, biển số/tên KH/người tạo (chứa),
+    // loại cuộc hẹn (đa giá trị '|'), và 5 cờ trạng thái (Mới tạo/Xác nhận/Đã liên hệ/Tiếp nhận/Hủy) gom thành AppStatusList.
+    // Phân trang theo TRANG (Ft_PageIndex 1-based / Ft_PageSize). Trả kèm thông tin xe/KH/KTV/khoang/RO đã join.
+    public async Task<object> SearchAppointmentsWhAsync(SearchAppointmentsWhDto dto)
+    {
+        var q = db.Appointments.Where(a => a.OrgId == Org);
+
+        // DealerCode: đại lý (đơn giá trị).
+        if (!string.IsNullOrWhiteSpace(dto.DealerCode))
+        {
+            var d = dto.DealerCode.Trim();
+            q = q.Where(a => a.DealerCode == d);
+        }
+
+        // AppDateTimeFrom..AppDateTimeTo: khoảng ngày hẹn (GenDateRangeCondition trên Ser_App.AppDateTimeFrom).
+        if (!string.IsNullOrWhiteSpace(dto.AppDateTimeFrom) && DateTime.TryParse(dto.AppDateTimeFrom, out var from))
+            q = q.Where(a => a.PreferredAt >= from);
+        if (!string.IsNullOrWhiteSpace(dto.AppDateTimeTo) && DateTime.TryParse(dto.AppDateTimeTo, out var to))
+            q = q.Where(a => a.PreferredAt <= to);
+
+        // PlateNo: LIKE (chứa) trên biển số.
+        if (!string.IsNullOrWhiteSpace(dto.PlateNo))
+        {
+            var p = dto.PlateNo.Trim();
+            q = q.Where(a => a.Plate != null && a.Plate.Contains(p));
+        }
+
+        // CusName: LIKE (chứa) trên tên khách hàng.
+        if (!string.IsNullOrWhiteSpace(dto.CustomerName))
+        {
+            var n = dto.CustomerName.Trim();
+            q = q.Where(a => a.CustomerName.Contains(n));
+        }
+
+        // Creator: người tạo lịch (MiniBooking chưa lưu Creator → lọc theo Engineer như proxy nếu có).
+        if (!string.IsNullOrWhiteSpace(dto.Creator))
+        {
+            var c = dto.Creator.Trim();
+            q = q.Where(a => a.Engineer == c);
+        }
+
+        // AppTypeCodeList: '|'-separated → IN (...).
+        var appTypes = SplitList(dto.AppTypeCodes);
+        if (appTypes.Length > 0) q = q.Where(a => a.AppTypeCode != null && appTypes.Contains(a.AppTypeCode));
+
+        // 5 cờ trạng thái → AppStatusList (1 Mới tạo / 2 Xác nhận / 5 Đã liên hệ / 3 Tiếp nhận / 4 Hủy).
+        // Không bật cờ nào → không lọc theo trạng thái (giống nguồn khi AppStatusList rỗng).
+        var statusCodes = new List<string>();
+        if (dto.FlagMoiTao == true) statusCodes.Add(ApptStatusRules.NewStatus);
+        if (dto.FlagXacNhan == true) statusCodes.Add(ApptStatusRules.ConfirmedCode);
+        if (dto.FlagDaLienHe == true) statusCodes.Add(ApptStatusRules.ContactedCode);
+        if (dto.FlagTiepNhan == true) statusCodes.Add(ApptStatusRules.ReceptionCode);
+        if (dto.FlagHuy == true) statusCodes.Add(ApptStatusRules.CancelCode);
+        var statuses = statusCodes.Select(ParseSourceStatus).Where(s => s.HasValue).Select(s => s!.Value).ToArray();
+        if (statuses.Length > 0) q = q.Where(a => statuses.Contains(a.Status));
+
+        var total = await q.CountAsync();
+
+        // Phân trang theo trang (Ft_PageIndex 1-based, Ft_PageSize mặc định 20, tối đa 500).
+        var pageIndex = Math.Max(1, dto.PageIndex ?? 1);
+        var pageSize = Math.Clamp(dto.PageSize ?? 20, 1, 500);
+        var rows = await q.OrderBy(a => a.PreferredAt).ThenBy(a => a.Id)
+            .Skip((pageIndex - 1) * pageSize).Take(pageSize)
+            .Select(a => new
+            {
+                a.Code, a.CustomerName, a.Phone, a.Vin, a.Plate, a.ServiceType, a.PreferredAt,
+                a.DealerCode, a.Engineer, status = a.Status.ToString(), statusText = Text(a.Status),
+                a.RoNo, a.RoId, a.BayCode, a.AppTypeCode, a.SlotFrom, a.SlotTo,
+                a.ContactedAt, a.ContactResult, a.CreatedAt
+            }).ToListAsync();
+
+        // Join thông tin xe/KH/KTV/khoang/RO (Ser_Car/Ser_Customer/Ser_Engineer/Ser_Cavity/Ser_RO).
+        var bayCodes = rows.Where(r => !string.IsNullOrWhiteSpace(r.BayCode)).Select(r => r.BayCode!).Distinct().ToList();
+        var bays = await db.ServiceBays.Where(b => b.OrgId == Org && bayCodes.Contains(b.Code))
+            .Select(b => new { b.Code, b.Name, b.BayType }).ToListAsync();
+        var engCodes = rows.Where(r => !string.IsNullOrWhiteSpace(r.Engineer)).Select(r => r.Engineer!).Distinct().ToList();
+        var engineers = await db.Engineers.Where(e => e.OrgId == Org && engCodes.Contains(e.Code))
+            .Select(e => new { e.Code, e.Name, e.Skill }).ToListAsync();
+        var roIds = rows.Where(r => !string.IsNullOrWhiteSpace(r.RoId)).Select(r => r.RoId!).Distinct().ToList();
+        var ros = await db.RepairOrders.Where(r => r.OrgId == Org && roIds.Contains(r.RoId))
+            .Select(r => new { r.RoId, r.RoNo, r.Status }).ToListAsync();
+
+        var items = rows.Select(r => new
+        {
+            r.Code, r.CustomerName, r.Phone, r.Vin, r.Plate, r.ServiceType, r.PreferredAt,
+            r.DealerCode, r.Engineer, r.status, r.statusText, r.RoNo, r.RoId, r.BayCode, r.AppTypeCode,
+            r.SlotFrom, r.SlotTo, r.ContactedAt, r.ContactResult, r.CreatedAt,
+            bay = string.IsNullOrWhiteSpace(r.BayCode) ? null : bays.FirstOrDefault(b => b.Code == r.BayCode),
+            engineer = string.IsNullOrWhiteSpace(r.Engineer) ? null : engineers.FirstOrDefault(e => e.Code == r.Engineer),
+            ro = string.IsNullOrWhiteSpace(r.RoId) ? null : ros.FirstOrDefault(x => x.RoId == r.RoId)
+        }).ToList();
+
+        return new
+        {
+            total, pageIndex, pageSize, count = items.Count,
+            totalPages = pageSize >0 ? (int)Math.Ceiling(total / (double)pageSize) : 0,
+            statusCodes, items
         };
     }
 }
